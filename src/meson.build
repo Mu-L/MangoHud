@@ -1,12 +1,18 @@
 glslang = find_program('glslang', 'glslangValidator')
 
+if get_option('dynamic_string_tokens')
+  ld_prefix = get_option('prefix') + '/\$LIB/'
+else
+  ld_prefix = join_paths(get_option('prefix') ,get_option('libdir')) + '/'
+endif
+
 # Needs prefix for configure_file()
 if get_option('append_libdir_mangohud')
   libdir_mangohud = join_paths(get_option('prefix'), get_option('libdir'), 'mangohud')
-  ld_libdir_mangohud = get_option('prefix') + '/\$LIB/mangohud/'
+  ld_libdir_mangohud = ld_prefix + 'mangohud/'
 else
   libdir_mangohud = join_paths(get_option('prefix'), get_option('libdir'))
-  ld_libdir_mangohud = get_option('prefix') + '/\$LIB/'
+  ld_libdir_mangohud = ld_prefix
 endif
 
 git = find_program('git', required: false)
@@ -54,6 +60,9 @@ vklayer_files = files(
   'gpu.cpp',
   'blacklist.cpp',
   'file_utils.cpp',
+  'nvidia.cpp',
+  'gpu_fdinfo.cpp',
+  'amdgpu.cpp'
 )
 
 opengl_files  = []
@@ -77,14 +86,14 @@ if is_unixy
     'memory.cpp',
     'iostats.cpp',
     'notify.cpp',
-    'elfhacks.cpp',
-    'real_dlsym.cpp',
+    'elfhacks.c',
+    'real_dlsym.c',
     'pci_ids.cpp',
     'battery.cpp',
     'control.cpp',
     'device.cpp',
-    'amdgpu.cpp',
-    'intel.cpp'
+    'net.cpp',
+    'shell.cpp'
   )
 
   opengl_files = files(
@@ -106,7 +115,6 @@ if is_unixy
   if nvml_h_found
     pre_args += '-DHAVE_NVML'
     vklayer_files += files(
-      'nvml.cpp',
       'loaders/loader_nvml.cpp',
     )
   endif
@@ -124,8 +132,7 @@ if is_unixy
 
     pre_args += '-DHAVE_XNVCTRL'
     vklayer_files += files(
-      'loaders/loader_nvctrl.cpp',
-      'nvctrl.cpp',
+      'loaders/loader_nvctrl.cpp'
     )
   endif
 
@@ -140,6 +147,14 @@ if is_unixy
     opengl_files += files(
       'loaders/loader_glx.cpp',
       'gl/inject_glx.cpp',
+    )
+  endif
+
+  if get_option('with_wayland').enabled()
+    pre_args += '-DHAVE_WAYLAND'
+
+    vklayer_files += files(
+      'wayland_keybinds.cpp'
     )
   endif
 
@@ -188,7 +203,6 @@ mangohud_static_lib = static_library(
     implot_dep],
   include_directories : [inc_common],
   link_args : link_args,
-  link_with : implot_lib,
   install_dir : libdir_mangohud,
   install : false
 )
@@ -236,31 +250,10 @@ mangohud_opengl_shared_lib = shared_library(
   install: true
 )
 
-if is_unixy
-  mangohud_dlsym = shared_library(
-    'MangoHud_dlsym',
-    files(
-      'elfhacks.cpp',
-      'real_dlsym.cpp',
-      'hook_dlsym.cpp',
-    ),
-    c_args : [
-      pre_args,
-      ],
-    cpp_args : [
-      pre_args,
-      ],
-    gnu_symbol_visibility : 'hidden',
-    dependencies : [dep_dl],
-    include_directories : [inc_common],
-    link_args : link_args,
-    link_with: mangohud_static_lib,
-    install_dir : libdir_mangohud,
-    install : true
-  )
-endif
-
 if get_option('mangoapp')
+  if not get_option('with_x11').enabled()
+    error('mangoapp also needs \'with_x11\'')
+  endif
   pre_args += '-DIMGUI_IMPL_OPENGL_LOADER_GLEW'
   pre_args += '-DMANGOAPP'
   mangoapp = executable(
@@ -280,9 +273,11 @@ if get_option('mangoapp')
     dependencies : [
       dearimgui_dep,
       dep_dl,
+      dep_vulkan,
       spdlog_dep,
       dbus_dep,
       dep_x11,
+      dep_wayland_client,
       glfw3_dep,
       json_dep,
       glew_dep,
@@ -304,30 +299,20 @@ mangoapp = executable(
   install : true
 )
 endif
-
-if get_option('mangoapp_layer')
-  mangoapp_layer = shared_library(
-    'MangoApp',
-    vk_enum_to_str,
+if is_unixy
+  mangohud_shim = shared_library(
+    'MangoHud_shim',
     files(
-      'app/layer.cpp',
+      'gl/shim.c',
+      'real_dlsym.c',
+      'elfhacks.c'
     ),
-    c_args : [
-      pre_args,
-      ],
-    cpp_args : [
-      pre_args,
-      ],
     dependencies : [
-      dep_vulkan,
-      json_dep
+      dep_dl
     ],
-    gnu_symbol_visibility : 'hidden',
     include_directories : [inc_common],
-    link_args : link_args,
-    install_tag : 'mangoapp',
     install_dir : libdir_mangohud,
-    install : true
+    install: true
   )
 endif
 
@@ -345,13 +330,3 @@ configure_file(input : '../bin/mangohud.in',
   install_dir : get_option('bindir'),
   install_tag : 'scripts',
 )
-
-if get_option('mangoapp_layer')
-  configure_file(input : 'app/layer.json.in',
-    output : 'libMangoApp.@0@.json'.format(host_machine.cpu_family()),
-    configuration : conf_data,
-    install : true,
-    install_dir : join_paths(get_option('datadir'), 'vulkan', 'implicit_layer.d'),
-    install_tag : 'mangoapp',
-  )
-endif

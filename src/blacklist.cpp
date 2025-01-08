@@ -23,8 +23,10 @@ static  std::vector<std::string> blacklist {
     "Battle.net.exe",
     "BethesdaNetLauncher.exe",
     "EpicGamesLauncher.exe",
+    "halloy",
     "IGOProxy.exe",
     "IGOProxy64.exe",
+    "monado-service",
     "Origin.exe",
     "OriginThinSetupInternal.exe",
     "steam",
@@ -49,11 +51,14 @@ static  std::vector<std::string> blacklist {
     "RSI Launcher.exe",
     "tabtip.exe",
     "steam.exe",
-    "wine64-preloader",
     "explorer.exe",
     "wine-preloader",
     "iexplore.exe",
     "rundll32.exe",
+    "Launcher", //Paradox Interactive Launcher
+    "steamwebhelper.exe",
+    "EpicWebHelper.exe",
+    "UplayWebCore.exe"
 };
 
 

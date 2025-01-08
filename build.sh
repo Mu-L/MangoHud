@@ -54,7 +54,7 @@ dependencies() {
         for i in $DISTRO; do
         echo "# Checking dependencies for \"$i\""
         case $i in
-            *arch*|*manjaro*|*artix*)
+            *arch*|*manjaro*|*artix*|*SteamOS*)
                 MANAGER_QUERY="pacman -Q"
                 MANAGER_INSTALL="pacman -S"
                 DEPS="{${DEPS_ARCH}}"
@@ -68,12 +68,12 @@ dependencies() {
                 dep_install
 
                 unset INSTALL
-                DEPS="{glibc-devel.i686,libstdc++-devel.i686,libX11-devel.i686}"
+                DEPS="{glibc-devel.i686,libstdc++-devel.i686,libX11-devel.i686,wayland-devel.i686,libxkbcommon-devel.i686}"
                 dep_install
                 break
             ;;
 
-            *debian*|*ubuntu*|*deepin*)
+            *debian*|*ubuntu*|*deepin*|*pop*)
                 MANAGER_QUERY="dpkg-query -s"
                 MANAGER_INSTALL="apt install"
                 DEPS="{${DEPS_DEBIAN}}"
@@ -225,12 +225,12 @@ install() {
 
     echo DEFAULTLIB: $DEFAULTLIB
     /usr/bin/install -Dvm644 ./build/release/usr/lib/mangohud/lib64/libMangoHud.so /usr/lib/mangohud/lib64/libMangoHud.so
-    /usr/bin/install -Dvm644 ./build/release/usr/lib/mangohud/lib64/libMangoHud_dlsym.so /usr/lib/mangohud/lib64/libMangoHud_dlsym.so
     /usr/bin/install -Dvm644 ./build/release/usr/lib/mangohud/lib64/libMangoHud_opengl.so /usr/lib/mangohud/lib64/libMangoHud_opengl.so
+    /usr/bin/install -Dvm644 ./build/release/usr/lib/mangohud/lib64/libMangoHud_shim.so /usr/lib/mangohud/lib64/libMangoHud_shim.so
     if [ "$MACHINE" = "x86_64" ]; then
       /usr/bin/install -Dvm644 ./build/release/usr/lib/mangohud/lib32/libMangoHud.so /usr/lib/mangohud/lib32/libMangoHud.so
-      /usr/bin/install -Dvm644 ./build/release/usr/lib/mangohud/lib32/libMangoHud_dlsym.so /usr/lib/mangohud/lib32/libMangoHud_dlsym.so
       /usr/bin/install -Dvm644 ./build/release/usr/lib/mangohud/lib32/libMangoHud_opengl.so /usr/lib/mangohud/lib32/libMangoHud_opengl.so
+      /usr/bin/install -Dvm644 ./build/release/usr/lib/mangohud/lib32/libMangoHud_shim.so /usr/lib/mangohud/lib32/libMangoHud_shim.so
     fi
 
     /usr/bin/install -Dvm644 ./build/release/usr/share/vulkan/implicit_layer.d/MangoHud.x86_64.json /usr/share/vulkan/implicit_layer.d/MangoHud.x86_64.json

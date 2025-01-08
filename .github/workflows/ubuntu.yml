@@ -28,7 +28,8 @@ jobs:
           libglew-dev \
           libglfw3-dev \
           libwayland-dev \
-          libxnvctrl-dev
+          libxnvctrl-dev \
+          libxkbcommon-dev
         sudo pip3 install 'meson>=0.60'
     - name: 'Install clang'
       if:  ${{ (matrix.compiler == 'clang') }}
@@ -51,7 +52,6 @@ jobs:
           -D with_dbus=enabled
           -D mangoapp=true
           -D mangohudctl=true
-          -D mangoapp_layer=true
           -D tests=enabled
     - name: 'Build'
       run: meson compile -C ./builddir || ninja -C ./builddir

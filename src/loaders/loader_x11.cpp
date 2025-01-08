@@ -37,6 +37,14 @@ bool libx11_loader::Load(const std::string& library_name) {
     return false;
   }
 
+  XDefaultScreen =
+      reinterpret_cast<decltype(this->XDefaultScreen)>(
+          dlsym(library_, "XDefaultScreen"));
+  if (!XDefaultScreen) {
+      CleanUp(true);
+      return false;
+  }
+
   XQueryKeymap =
       reinterpret_cast<decltype(this->XQueryKeymap)>(
           dlsym(library_, "XQueryKeymap"));
@@ -69,6 +77,14 @@ bool libx11_loader::Load(const std::string& library_name) {
     return false;
   }
 
+  XQueryExtension =
+      reinterpret_cast<decltype(this->XQueryExtension)>(
+          dlsym(library_, "XQueryExtension"));
+  if (!XQueryExtension) {
+    CleanUp(true);
+    return false;
+  }
+
   loaded_ = true;
   return true;
 }
@@ -86,6 +102,7 @@ void libx11_loader::CleanUp(bool unload) {
   XKeysymToKeycode = NULL;
   XStringToKeysym = NULL;
   XGetGeometry = NULL;
+  XQueryExtension = NULL;
 
 }
 

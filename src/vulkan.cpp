@@ -50,8 +50,13 @@
 #include "notify.h"
 #include "blacklist.h"
 #include "pci_ids.h"
+#if defined(HAVE_WAYLAND)
+#include "wayland_hook.h"
+#endif
+#include "real_dlsym.h"
 #include "file_utils.h"
 #ifdef __linux__
+#include <dlfcn.h>
 #include "implot.h"
 #endif
 
@@ -458,7 +463,7 @@ static void snapshot_swapchain_frame(struct swapchain_data *data)
    struct device_data *device_data = data->device;
    struct instance_data *instance_data = device_data->instance;
    update_hud_info(data->sw_stats, instance_data->params, device_data->properties.vendorID);
-   check_keybinds(instance_data->params, device_data->properties.vendorID);
+   check_keybinds(instance_data->params);
 #ifdef __linux__
    if (instance_data->params.control >= 0) {
       control_client_check(instance_data->params.control, instance_data->control_client, gpu.c_str());
@@ -1497,6 +1502,14 @@ static struct overlay_draw *before_present(struct swapchain_data *swapchain_data
    return draw;
 }
 
+static bool IsPresentModeSupported(VkPresentModeKHR targetPresentMode, const std::vector<VkPresentModeKHR>& supportedPresentModes) {
+   for (const auto& mode : supportedPresentModes)
+      if (mode == targetPresentMode)
+         return true;
+
+    return false;  // Not found
+}
+
 static VkResult overlay_CreateSwapchainKHR(
     VkDevice                                    device,
     const VkSwapchainCreateInfoKHR*             pCreateInfo,
@@ -1508,12 +1521,36 @@ static VkResult overlay_CreateSwapchainKHR(
    createInfo.imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
    struct device_data *device_data = FIND(struct device_data, device);
-   array<VkPresentModeKHR, 4> modes = {VK_PRESENT_MODE_FIFO_RELAXED_KHR,
-           VK_PRESENT_MODE_IMMEDIATE_KHR,
-           VK_PRESENT_MODE_MAILBOX_KHR,
-           VK_PRESENT_MODE_FIFO_KHR};
-   if (device_data->instance->params.vsync < 4)
-      createInfo.presentMode = modes[device_data->instance->params.vsync];
+   auto params = device_data->instance->params;
+
+   if (device_data->instance->params.vsync < 4) {
+      HUDElements.cur_present_mode = HUDElements.presentModes[params.vsync];
+      createInfo.presentMode = HUDElements.cur_present_mode;
+   } else {
+      HUDElements.cur_present_mode = createInfo.presentMode;
+   }
+
+   struct instance_data *instance_data =
+      FIND(struct instance_data, device_data->physical_device);
+
+   PFN_vkGetPhysicalDeviceSurfacePresentModesKHR fpGetPhysicalDeviceSurfacePresentModesKHR =
+   (PFN_vkGetPhysicalDeviceSurfacePresentModesKHR) instance_data->vtable.GetInstanceProcAddr(instance_data->instance, "vkGetPhysicalDeviceSurfacePresentModesKHR");
+
+   if (fpGetPhysicalDeviceSurfacePresentModesKHR != NULL) {
+      uint32_t presentModeCount;
+      std::vector<VkPresentModeKHR> presentModes(6);
+      VkResult result = fpGetPhysicalDeviceSurfacePresentModesKHR(device_data->physical_device, pCreateInfo->surface, &presentModeCount, presentModes.data());
+
+      if (result == VK_SUCCESS) {
+         if (IsPresentModeSupported(HUDElements.cur_present_mode, presentModes))
+            SPDLOG_DEBUG("Present mode: {}", HUDElements.presentModeMap[HUDElements.cur_present_mode]);
+         else {
+            SPDLOG_DEBUG("Present mode is not supported: {}", HUDElements.presentModeMap[HUDElements.cur_present_mode]);
+            HUDElements.cur_present_mode = VK_PRESENT_MODE_FIFO_KHR;
+            createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+         }
+      }
+   }
 
    VkResult result = device_data->vtable.CreateSwapchainKHR(device, &createInfo, pAllocator, pSwapchain);
    if (result != VK_SUCCESS) return result;
@@ -1528,6 +1565,7 @@ static VkResult overlay_CreateSwapchainKHR(
    swapchain_data->sw_stats.engineVersion = device_data->instance->engineVersion;
    swapchain_data->sw_stats.engine        = device_data->instance->engine;
 
+   HUDElements.vendorID = prop.vendorID;
    std::stringstream ss;
 //   ss << prop.deviceName;
    if (prop.vendorID == 0x10de) {
@@ -1768,6 +1806,7 @@ static VkResult overlay_CreateDevice(
                                                pCreateInfo->enabledExtensionCount);
 
    uint32_t extension_count;
+
    instance_data->vtable.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extension_count, nullptr);
 
    std::vector<VkExtensionProperties> available_extensions(extension_count);
@@ -1820,7 +1859,6 @@ static VkResult overlay_CreateDevice(
       gpu = device_data->properties.deviceName;
       SPDLOG_DEBUG("gpu: {}", gpu);
 #endif
-      init_gpu_stats(device_data->properties.vendorID, device_data->properties.deviceID, device_data->instance->params);
    }
 
    return result;
@@ -1995,6 +2033,24 @@ static void overlay_DestroyInstance(
    destroy_instance_data(instance_data);
 }
 
+#ifdef VK_USE_PLATFORM_WAYLAND_KHR
+static VkResult overlay_CreateWaylandSurfaceKHR(
+   VkInstance                                  instance,
+   const VkWaylandSurfaceCreateInfoKHR*        pCreateInfo,
+   const VkAllocationCallbacks*                pAllocator,
+   VkSurfaceKHR*                               pSurface
+)
+{
+   struct instance_data *instance_data = FIND(struct instance_data, instance);
+   if (!wl_handle)
+      wl_handle = real_dlopen("libwayland-client.so", RTLD_LAZY);
+   wl_display_ptr = pCreateInfo->display;
+   HUDElements.display_server = HUDElements.display_servers::WAYLAND;
+   init_wayland_data();
+   return instance_data->vtable.CreateWaylandSurfaceKHR(instance, pCreateInfo, pAllocator, pSurface);
+}
+#endif
+
 extern "C" VK_LAYER_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL overlay_GetDeviceProcAddr(VkDevice dev,
                                                                              const char *funcName);
 extern "C" VK_LAYER_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL overlay_GetInstanceProcAddr(VkInstance instance,
@@ -2015,6 +2071,9 @@ static const struct {
    ADD_HOOK(EndCommandBuffer),
    ADD_HOOK(CmdExecuteCommands),
 
+#ifdef VK_USE_PLATFORM_WAYLAND_KHR
+   ADD_HOOK(CreateWaylandSurfaceKHR),
+#endif
    ADD_HOOK(CreateSwapchainKHR),
    ADD_HOOK(QueuePresentKHR),
    ADD_HOOK(DestroySwapchainKHR),

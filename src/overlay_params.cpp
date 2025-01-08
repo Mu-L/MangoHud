@@ -30,14 +30,20 @@
 #include "mesa/util/os_socket.h"
 #include "file_utils.h"
 
-#ifdef HAVE_X11
-#include <X11/keysym.h>
-#include "loaders/loader_x11.h"
+#if defined(HAVE_X11) || defined(HAVE_WAYLAND)
+#include <xkbcommon/xkbcommon.h>
 #endif
 
 #include "dbus_info.h"
 
 #include "app/mangoapp.h"
+#include "fps_metrics.h"
+#include "version.h"
+
+std::unique_ptr<fpsMetrics> fpsmetrics;
+std::mutex config_mtx;
+std::condition_variable config_cv;
+bool config_ready = false;
 
 #if __cplusplus >= 201703L
 
@@ -105,8 +111,8 @@ parse_control(const char *str)
 
    int ret = os_socket_listen_abstract(path.c_str(), 1);
    if (ret < 0) {
-      SPDLOG_ERROR("Couldn't create socket pipe at '{}'", path);
-      SPDLOG_ERROR("ERROR: '{}'", strerror(errno));
+      SPDLOG_DEBUG("Couldn't create socket pipe at '{}'", path);
+      SPDLOG_DEBUG("ERROR: '{}'", strerror(errno));
       return ret;
    }
 
@@ -125,22 +131,19 @@ parse_float(const char *str)
    return val;
 }
 
-#ifdef HAVE_X11
+#if defined(HAVE_X11) || defined(HAVE_WAYLAND)
 static std::vector<KeySym>
 parse_string_to_keysym_vec(const char *str)
 {
    std::vector<KeySym> keys;
-   if(get_libx11()->IsLoaded())
-   {
-      auto keyStrings = str_tokenize(str);
-      for (auto& ks : keyStrings) {
-         trim(ks);
-         KeySym xk = get_libx11()->XStringToKeysym(ks.c_str());
-         if (xk)
-            keys.push_back(xk);
-         else
-            SPDLOG_ERROR("Unrecognized key: '{}'", ks);
-      }
+   auto keyStrings = str_tokenize(str);
+   for (auto& ks : keyStrings) {
+      trim(ks);
+      xkb_keysym_t xk = xkb_keysym_from_name(ks.c_str(), XKB_KEYSYM_CASE_INSENSITIVE);
+      if (xk != XKB_KEY_NoSymbol)
+         keys.push_back(xk);
+      else
+         SPDLOG_ERROR("Unrecognized key: '{}'", ks);
    }
    return keys;
 }
@@ -153,6 +156,7 @@ parse_string_to_keysym_vec(const char *str)
 #define parse_upload_logs           parse_string_to_keysym_vec
 #define parse_toggle_fps_limit      parse_string_to_keysym_vec
 #define parse_toggle_preset         parse_string_to_keysym_vec
+#define parse_reset_fps_metrics     parse_string_to_keysym_vec
 
 #else
 #define parse_toggle_hud(x)            {}
@@ -163,6 +167,7 @@ parse_string_to_keysym_vec(const char *str)
 #define parse_upload_logs(x)           {}
 #define parse_toggle_fps_limit(x)      {}
 #define parse_toggle_preset(x)         {}
+#define parse_reset_fps_metrics(x)     {}
 #endif
 
 // NOTE: This is NOT defined as an OVERLAY_PARAM and will be called manually
@@ -285,6 +290,22 @@ parse_str_tokenize(const char *str, const std::string& delims = ",:+", bool btri
     return data;
 }
 
+static std::vector<unsigned>
+parse_gpu_list(const char *str) {
+
+   std::vector<unsigned int> result;
+   std::stringstream ss{std::string(str)};
+   std::string item;
+
+   while (std::getline(ss, item, ',')) {
+      unsigned int num = static_cast<unsigned int>(std::stoul(item));
+      printf("parsing gpu list num: %i\n", num);
+      result.push_back(num);
+   }
+
+   return result;
+}
+
 
 static unsigned
 parse_unsigned(const char *str)
@@ -334,39 +355,8 @@ parse_path(const char *str)
 static std::vector<std::string>
 parse_benchmark_percentiles(const char *str)
 {
+   SPDLOG_INFO("benchmark_percetile is obsolete and will be removed. Use fps_metrics instead");
    std::vector<std::string> percentiles;
-   auto tokens = str_tokenize(str);
-   for (auto& value : tokens) {
-      trim(value);
-
-      if (value == "AVG") {
-         percentiles.push_back(value);
-         continue;
-      }
-
-      float as_float;
-      size_t float_len = 0;
-
-      try {
-         as_float = parse_float(value, &float_len);
-      } catch (const std::invalid_argument&) {
-         SPDLOG_ERROR("invalid benchmark percentile: '{}'", value);
-         continue;
-      }
-
-      if (float_len != value.length()) {
-         SPDLOG_ERROR("invalid benchmark percentile: '{}'", value);
-         continue;
-      }
-
-      if (as_float > 100 || as_float < 0) {
-         SPDLOG_ERROR("benchmark percentile is not between 0 and 100 ({})", value);
-         continue;
-      }
-
-      percentiles.push_back(value);
-   }
-
    return percentiles;
 }
 
@@ -414,6 +404,20 @@ parse_gl_size_query(const char *str)
    return GL_SIZE_DRAWABLE;
 }
 
+static std::vector<std::string>
+parse_fps_metrics(const char *str){
+   std::vector<std::string> metrics;
+   auto tokens = str_tokenize(str);
+   for (auto& token : tokens) {
+      metrics.push_back(token);
+   }
+
+   fpsmetrics.release();
+   fpsmetrics = std::make_unique<fpsMetrics>(metrics);
+
+   return metrics;
+}
+
 #define parse_width(s) parse_unsigned(s)
 #define parse_height(s) parse_unsigned(s)
 #define parse_vsync(s) parse_unsigned(s)
@@ -432,7 +436,6 @@ parse_gl_size_query(const char *str)
 #define parse_media_player_name(s) parse_str(s)
 #define parse_font_scale_media_player(s) parse_float(s)
 #define parse_cpu_text(s) parse_str(s)
-#define parse_gpu_text(s) parse_str(s)
 #define parse_fps_text(s) parse_str(s)
 #define parse_log_interval(s) parse_unsigned(s)
 #define parse_font_size(s) parse_float(s)
@@ -464,6 +467,7 @@ parse_gl_size_query(const char *str)
 #define parse_text_color(s) parse_color(s)
 #define parse_media_player_color(s) parse_color(s)
 #define parse_wine_color(s) parse_color(s)
+#define parse_network_color(s) parse_color(s)
 #define parse_gpu_load_color(s) parse_load_color(s)
 #define parse_cpu_load_color(s) parse_load_color(s)
 #define parse_gpu_load_value(s) parse_load_value(s)
@@ -479,6 +483,8 @@ parse_gl_size_query(const char *str)
 #define parse_text_outline_color(s) parse_color(s)
 #define parse_text_outline_thickness(s) parse_float(s)
 #define parse_device_battery(s) parse_str_tokenize(s)
+#define parse_network(s) parse_str_tokenize(s)
+#define parse_gpu_text(s) parse_str_tokenize(s)
 
 static bool
 parse_help(const char *str)
@@ -553,58 +559,115 @@ const char *overlay_param_names[] = {
 };
 
 static void
-parse_overlay_env(struct overlay_params *params,
-                  const char *env)
+initialize_preset(struct overlay_params *params)
 {
+   if (params->options.find("preset") != params->options.end()) {
+      auto presets = parse_preset(params->options.find("preset")->second.c_str());
+      if (!presets.empty())
+         params->preset = presets;
+   }
+   current_preset = params->preset[0];
+}
+
+static void
+set_parameters_from_options(struct overlay_params *params)
+{
+   bool read_cfg = false;
+   if (params->options.find("read_cfg") != params->options.end() && params->options.find("read_cfg")->second != "0")
+      read_cfg = true;
+
+   if (params->options.find("full") != params->options.end() && params->options.find("full")->second != "0") {
+#define OVERLAY_PARAM_BOOL(name) \
+      params->enabled[OVERLAY_PARAM_ENABLED_##name] = 1;
+#define OVERLAY_PARAM_CUSTOM(name)
+      OVERLAY_PARAMS
+      #undef OVERLAY_PARAM_BOOL
+      #undef OVERLAY_PARAM_CUSTOM
+      params->enabled[OVERLAY_PARAM_ENABLED_histogram] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_fps_only] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_battery_icon] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_mangoapp_steam] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_hide_fsr_sharpness] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_throttling_status] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_fcat] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_horizontal] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_hud_no_margin] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_log_versioning] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_hud_compact] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_exec_name] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_trilinear] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_bicubic] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_retro] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_debug] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_engine_short_names] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_dynamic_frame_timing] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit] = 0;
+      params->enabled[OVERLAY_PARAM_ENABLED_duration] = false;
+      params->enabled[OVERLAY_PARAM_ENABLED_core_bars] = false;
+      params->enabled[OVERLAY_PARAM_ENABLED_read_cfg] = read_cfg;
+      params->enabled[OVERLAY_PARAM_ENABLED_time_no_label] = false;
+      params->options.erase("full");
+   }
+   for (auto& it : params->options) {
+#define OVERLAY_PARAM_BOOL(name)                                 \
+      if (it.first == #name) {                                   \
+          params->enabled[OVERLAY_PARAM_ENABLED_##name] =        \
+          strtol(it.second.c_str(), NULL, 0);                    \
+          continue;                                              \
+       }
+#define OVERLAY_PARAM_CUSTOM(name)                               \
+      if (it.first == #name) {                                   \
+         params->name = parse_##name(it.second.c_str());         \
+      continue;                                                  \
+   }
+      OVERLAY_PARAMS
+      #undef OVERLAY_PARAM_BOOL
+      #undef OVERLAY_PARAM_CUSTOM
+      if (it.first == "preset") {
+         continue; // Handled above
+      }
+      SPDLOG_ERROR("Unknown option '{}'", it.first.c_str());
+   }
+}
+
+static void
+parse_overlay_env(struct overlay_params *params,
+                  const char *env, bool use_existing_preset)
+{
+   const char *env_start = env;
+
    uint32_t num;
    char key[256], value[256];
    while ((num = parse_string(env, key, value)) != 0) {
+      trim_char(key);
+      trim_char(value);
       env += num;
-      if (!strcmp("full", key)) {
-         bool read_cfg = params->enabled[OVERLAY_PARAM_ENABLED_read_cfg];
-#define OVERLAY_PARAM_BOOL(name) \
-         params->enabled[OVERLAY_PARAM_ENABLED_##name] = 1;
-#define OVERLAY_PARAM_CUSTOM(name)
-         OVERLAY_PARAMS
-#undef OVERLAY_PARAM_BOOL
-#undef OVERLAY_PARAM_CUSTOM
-         params->enabled[OVERLAY_PARAM_ENABLED_histogram] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_gpu_load_change] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_cpu_load_change] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_fps_only] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_fps_color_change] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_core_load_change] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_battery_icon] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_mangoapp_steam] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_hide_fsr_sharpness] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_throttling_status] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_read_cfg] = read_cfg;
-         params->enabled[OVERLAY_PARAM_ENABLED_fcat] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_horizontal] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_horizontal_stretch] = 1;
-         params->enabled[OVERLAY_PARAM_ENABLED_hud_no_margin] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_log_versioning] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_hud_compact] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_exec_name] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_trilinear] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_bicubic] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_retro] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_debug] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_engine_short_names] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_dynamic_frame_timing] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_core_bars] = false;
+      if (!strcmp("preset", key)) {
+         if (!use_existing_preset) {
+            add_to_options(params, key, value);
+            initialize_preset(params);
+         }
+         break;
+      }
+   }
+
+   presets(current_preset, params);
+   env = env_start;
+
+   while ((num = parse_string(env, key, value)) != 0) {
+      trim_char(key);
+      trim_char(value);
+      env += num;
+      if (!strcmp("preset", key)) {
+         continue; // Avoid 'Unknown option' error
       }
 #define OVERLAY_PARAM_BOOL(name)                                       \
       if (!strcmp(#name, key)) {                                       \
-         params->enabled[OVERLAY_PARAM_ENABLED_##name] =               \
-            strtol(value, NULL, 0);                                    \
          add_to_options(params, key, value);                           \
          continue;                                                     \
       }
 #define OVERLAY_PARAM_CUSTOM(name)                                     \
       if (!strcmp(#name, key)) {                                       \
-         params->name = parse_##name(value);                           \
          add_to_options(params, key, value);                           \
          continue;                                                     \
       }
@@ -613,6 +676,7 @@ parse_overlay_env(struct overlay_params *params,
 #undef OVERLAY_PARAM_CUSTOM
       SPDLOG_ERROR("Unknown option '{}'", key);
    }
+   set_parameters_from_options(params);
 }
 
 static void set_param_defaults(struct overlay_params *params){
@@ -650,6 +714,7 @@ static void set_param_defaults(struct overlay_params *params){
    params->enabled[OVERLAY_PARAM_ENABLED_dynamic_frame_timing] = false;
    params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit] = false;
    params->enabled[OVERLAY_PARAM_ENABLED_duration] = false;
+   params->enabled[OVERLAY_PARAM_ENABLED_frame_timing_detailed] = false;
    params->fps_sampling_period = 500000000; /* 500ms */
    params->width = 0;
    params->height = 140;
@@ -675,6 +740,7 @@ static void set_param_defaults(struct overlay_params *params){
    params->background_color = 0x020202;
    params->text_color = 0xffffff;
    params->media_player_color = 0xffffff;
+   params->network_color = 0xe07b85;
    params->media_player_name = "";
    params->font_scale = 1.0f;
    params->wine_color = 0xeb5b5b;
@@ -701,30 +767,59 @@ static void set_param_defaults(struct overlay_params *params){
    params->text_outline_thickness = 1.5;
 }
 
+static std::string verify_pci_dev(std::string pci_dev) {
+   uint32_t domain, bus, slot, func;
+
+   if (
+      sscanf(
+         pci_dev.c_str(), "%04x:%02x:%02x.%x",
+         &domain, &bus, &slot, &func
+      ) != 4) {
+      SPDLOG_ERROR("Failed to parse PCI device ID: '{}'", pci_dev);
+      return pci_dev;
+   }
+
+   std::stringstream ss;
+   ss << std::hex
+      << std::setw(4) << std::setfill('0') << domain << ":"
+      << std::setw(2) << bus << ":"
+      << std::setw(2) << slot << "."
+      << std::setw(1) << func;
+
+   SPDLOG_DEBUG("pci_dev = {}", ss.str());
+   return ss.str();
+}
+
 void
 parse_overlay_config(struct overlay_params *params,
                   const char *env, bool use_existing_preset)
 {
+   SPDLOG_DEBUG("Version: {}", MANGOHUD_VERSION);
    std::vector<int> default_preset = {-1, 0, 1, 2, 3, 4};
-   *params = {
-     .preset = use_existing_preset ? params->preset : default_preset
-   };
+   auto preset = std::move(params->preset);
+   *params = {};
+   params->preset = use_existing_preset ? std::move(preset) : default_preset;
    set_param_defaults(params);
+   if (!use_existing_preset) {
+      current_preset = params->preset[0];
+   }
 
-#ifdef HAVE_X11
-   params->toggle_hud = { XK_Shift_R, XK_F12 };
-   params->toggle_hud_position = { XK_Shift_R, XK_F11 };
-   params->toggle_preset = { XK_Shift_R, XK_F10 };
-   params->toggle_fps_limit = { XK_Shift_L, XK_F1 };
-   params->toggle_logging = { XK_Shift_L, XK_F2 };
-   params->reload_cfg = { XK_Shift_L, XK_F4 };
-   params->upload_log = { XK_Shift_L, XK_F3 };
-   params->upload_logs = { XK_Control_L, XK_F3 };
+#if defined(HAVE_X11) || defined(HAVE_WAYLAND)
+   params->toggle_hud = { XKB_KEY_Shift_R, XKB_KEY_F12 };
+   params->toggle_hud_position = { XKB_KEY_Shift_R, XKB_KEY_F11 };
+   params->toggle_preset = { XKB_KEY_Shift_R, XKB_KEY_F10 };
+   params->reset_fps_metrics = { XKB_KEY_Shift_R, XKB_KEY_F9};
+   params->toggle_fps_limit = { XKB_KEY_Shift_L, XKB_KEY_F1 };
+   params->toggle_logging = { XKB_KEY_Shift_L, XKB_KEY_F2 };
+   params->reload_cfg = { XKB_KEY_Shift_L, XKB_KEY_F4 };
+   params->upload_log = { XKB_KEY_Shift_L, XKB_KEY_F3 };
+   params->upload_logs = { XKB_KEY_Control_L, XKB_KEY_F3 };
 #endif
 
 #ifdef _WIN32
    params->toggle_hud = { VK_F12 };
    params->toggle_preset = { VK_F10 };
+   params->reset_fps_metrics = { VK_F9};
    params->toggle_fps_limit = { VK_F3 };
    params->toggle_logging = { VK_F2 };
    params->reload_cfg = { VK_F4 };
@@ -744,85 +839,39 @@ parse_overlay_config(struct overlay_params *params,
 
    HUDElements.ordered_functions.clear();
    HUDElements.exec_list.clear();
+   params->options.clear();
+   HUDElements.options.clear();
+
    // first pass with env var
    if (env)
-      parse_overlay_env(params, env);
+      parse_overlay_env(params, env, use_existing_preset);
 
    bool read_cfg = params->enabled[OVERLAY_PARAM_ENABLED_read_cfg];
+   bool env_contains_preset = params->options.find("preset") != params->options.end();
    if (!env || read_cfg) {
-
-      // Get config options
       parseConfigFile(*params);
 
-      if (!use_existing_preset) {
-         if (params->options.find("preset") != params->options.end()) {
-            auto presets = parse_preset(params->options.find("preset")->second.c_str());
-            if (!presets.empty())
-               params->preset = presets;
-         }
-        current_preset = params->preset[0];
+      if (!use_existing_preset && !env_contains_preset) {
+         initialize_preset(params);
       }
 
+      // clear options since we don't want config options to appear first
+      params->options.clear();
+      HUDElements.options.clear();
+      // add preset options
       presets(current_preset, params);
+      // potentially override preset options with config options
+      parseConfigFile(*params);
 
-      if (params->options.find("full") != params->options.end() && params->options.find("full")->second != "0") {
-#define OVERLAY_PARAM_BOOL(name) \
-            params->enabled[OVERLAY_PARAM_ENABLED_##name] = 1;
-#define OVERLAY_PARAM_CUSTOM(name)
-            OVERLAY_PARAMS
-#undef OVERLAY_PARAM_BOOL
-#undef OVERLAY_PARAM_CUSTOM
-         params->enabled[OVERLAY_PARAM_ENABLED_histogram] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_fps_only] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_battery_icon] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_mangoapp_steam] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_hide_fsr_sharpness] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_throttling_status] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_fcat] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_horizontal] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_hud_no_margin] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_log_versioning] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_hud_compact] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_exec_name] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_trilinear] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_bicubic] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_retro] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_debug] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_engine_short_names] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_dynamic_frame_timing] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit] = 0;
-         params->enabled[OVERLAY_PARAM_ENABLED_duration] = false;
-         params->enabled[OVERLAY_PARAM_ENABLED_core_bars] = false;
-         params->options.erase("full");
-      }
-      for (auto& it : params->options) {
-#define OVERLAY_PARAM_BOOL(name)                                       \
-         if (it.first == #name) {                                      \
-            params->enabled[OVERLAY_PARAM_ENABLED_##name] =            \
-               strtol(it.second.c_str(), NULL, 0);                     \
-            continue;                                                  \
-         }
-#define OVERLAY_PARAM_CUSTOM(name)                                     \
-         if (it.first == #name) {                                      \
-            params->name = parse_##name(it.second.c_str());            \
-            continue;                                                  \
-         }
-         OVERLAY_PARAMS
-#undef OVERLAY_PARAM_BOOL
-#undef OVERLAY_PARAM_CUSTOM
-         if (it.first == "preset") {
-            continue;
-         }
-         SPDLOG_ERROR("Unknown option '{}'", it.first.c_str());
-      }
+      set_parameters_from_options(params);
    }
 
-   // TODO decide what to do for legacy_layout=0
-   // second pass, override config file settings with MANGOHUD_CONFIG
-   if (params->enabled[OVERLAY_PARAM_ENABLED_legacy_layout] && env && read_cfg) {
-      // If passing legacy_layout=0 to MANGOHUD_CONFIG anyway then clear first pass' results
+   if (params->enabled[OVERLAY_PARAM_ENABLED_legacy_layout])
       HUDElements.ordered_functions.clear();
-      parse_overlay_env(params, env);
+
+   if (env && read_cfg) {
+      HUDElements.ordered_functions.clear();
+      parse_overlay_env(params, env, true);
    }
 
    // If fps_only param is enabled disable legacy_layout
@@ -836,7 +885,7 @@ parse_overlay_config(struct overlay_params *params,
       params->font_scale_media_player = 0.55f;
 
    // Convert from 0xRRGGBB to ImGui's format
-   std::array<unsigned *, 21> colors = {
+   std::array<unsigned *, 23> colors = {
       &params->cpu_color,
       &params->gpu_color,
       &params->vram_color,
@@ -858,6 +907,8 @@ parse_overlay_config(struct overlay_params *params,
       &params->fps_color[0],
       &params->fps_color[1],
       &params->fps_color[2],
+      &params->text_outline_color,
+      &params->network_color,
    };
 
    for (auto color : colors){
@@ -926,11 +977,18 @@ parse_overlay_config(struct overlay_params *params,
    auto real_size = params->font_size * params->font_scale;
    real_font_size = ImVec2(real_size, real_size / 2);
    HUDElements.params = params;
-   if (params->enabled[OVERLAY_PARAM_ENABLED_legacy_layout]){
-        HUDElements.legacy_elements();
+
+   for (const auto& option : HUDElements.options) {
+      SPDLOG_DEBUG("Param: '{}' = '{}'", option.first, option.second);
+   }
+
+   if (params->enabled[OVERLAY_PARAM_ENABLED_legacy_layout]) {
+      HUDElements.legacy_elements();
    } else {
-      for (auto& option : HUDElements.options)
+      HUDElements.ordered_functions.clear();
+      for (auto& option : HUDElements.options) {
          HUDElements.sort_elements(option);
+      }
    }
 
    // Needs ImGui context but it is null here for OpenGL so just note it and update somewhere else
@@ -945,8 +1003,6 @@ parse_overlay_config(struct overlay_params *params,
       logger->stop_logging();
    }
    logger = std::make_unique<Logger>(params);
-   if(params->autostart_log && !logger->is_active())
-      std::thread(autostart_log, params->autostart_log).detach();
 #ifdef MANGOAPP
    {
       extern bool new_frame;
@@ -957,12 +1013,30 @@ parse_overlay_config(struct overlay_params *params,
    mangoapp_cv.notify_one();
    g_fsrSharpness = params->fsr_steam_sharpness;
 #endif
+   if (HUDElements.net)
+      HUDElements.net->should_reset = true;
+
+   if (!params->gpu_list.empty() && !params->pci_dev.empty()) {
+      SPDLOG_WARN(
+         "You have specified both gpu_list and pci_dev, "
+         "ignoring pci_dev."
+      );
+   }
+
+   if (!params->pci_dev.empty())
+      params->pci_dev = verify_pci_dev(params->pci_dev);
+
+   {
+      std::lock_guard<std::mutex> lock(config_mtx);
+      config_ready = true;
+      config_cv.notify_one();
+   }
 }
 
 bool parse_preset_config(int preset, struct overlay_params *params){
-   const std::string data_dir = get_data_dir();
+   const char *presets_file_env = getenv("MANGOHUD_PRESETSFILE");
    const std::string config_dir = get_config_dir();
-   std::string preset_path = config_dir + "/MangoHud/" + "presets.conf";
+   std::string preset_path = presets_file_env ? presets_file_env : config_dir + "/MangoHud/" + "presets.conf";
 
    char preset_string[20];
    snprintf(preset_string, sizeof(preset_string), "[preset %d]", preset);
@@ -971,6 +1045,7 @@ bool parse_preset_config(int preset, struct overlay_params *params){
    stream.imbue(std::locale::classic());
 
    if (!stream.good()) {
+      SPDLOG_DEBUG("Failed to read presets file: '{}'.  Falling back to default presets", preset_path);
       return false;
    }
 
@@ -979,6 +1054,9 @@ bool parse_preset_config(int preset, struct overlay_params *params){
 
    while (std::getline(stream, line)) {
       trim(line);
+
+      if (line == "")
+         continue;
 
       if (line == preset_string) {
          found_preset = true;
@@ -1022,6 +1100,7 @@ void presets(int preset, struct overlay_params *params, bool inherit) {
          add_to_options(params, "fps", "1");
          add_to_options(params, "fps_only", "1");
          add_to_options(params, "frametime", "0");
+         add_to_options(params, "debug", "0");
          break;
 
       case 2:
@@ -1042,6 +1121,7 @@ void presets(int preset, struct overlay_params *params, bool inherit) {
          add_to_options(params, "cpu_power", "1");
          add_to_options(params, "battery_watt", "1");
          add_to_options(params, "battery_time", "1");
+         add_to_options(params, "debug", "0");
          break;
 
       case 3:
@@ -1055,12 +1135,14 @@ void presets(int preset, struct overlay_params *params, bool inherit) {
          add_to_options(params, "gpu_mem_clock", "1");
          add_to_options(params, "gpu_core_clock", "1");
          add_to_options(params, "battery", "1");
+         add_to_options(params, "hdr", "1");
+         add_to_options(params, "debug", "0");
          break;
 
       case 4:
          add_to_options(params, "full", "1");
          add_to_options(params, "throttling_status", "0");
-         add_to_options(params, "throttling_status_graph", "1");
+         add_to_options(params, "throttling_status_graph", "0");
          add_to_options(params, "io_read", "0");
          add_to_options(params, "io_write", "0");
          add_to_options(params, "arch", "0");
@@ -1075,6 +1157,17 @@ void presets(int preset, struct overlay_params *params, bool inherit) {
          add_to_options(params, "core_load_change", "0");
          add_to_options(params, "cpu_load_change", "0");
          add_to_options(params, "fps_color_change", "0");
+         add_to_options(params, "hdr", "1");
+         add_to_options(params, "refresh_rate", "1");
+         add_to_options(params, "media_player", "0");
+         add_to_options(params, "debug", "1");
+         add_to_options(params, "version", "0");
+         add_to_options(params, "frame_timing_detailed", "1");
+         add_to_options(params, "network", "1");
+         add_to_options(params, "present_mode", "0");
+         if ( deviceID == 0x1435 || deviceID == 0x163f )
+            add_to_options(params, "gpu_fan", "0");
+
          break;
 
    }

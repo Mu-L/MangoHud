@@ -1,6 +1,6 @@
 project('MangoHud',
   ['c', 'cpp'],
-  version : 'v0.7.0',
+  version : 'v0.7.2',
   license : 'MIT',
   meson_version: '>=0.60.0',
   default_options : ['buildtype=release', 'c_std=c99', 'cpp_std=c++14', 'warning_level=2']
@@ -27,15 +27,13 @@ pre_args = [
   '-DSPDLOG_COMPILED_LIB'
 ]
 
-# Define DEBUG for debug builds only (debugoptimized is not included on this one)
+# Always set max spdlog level, handle this using MANGOHUD_LOG_LEVEL instead.
 if get_option('buildtype') == 'debug'
   pre_args += '-DDEBUG'
   pre_args += '-DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE'
 else
-  pre_args += '-DNDEBUG'
-  pre_args += '-DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_' + get_option('loglevel').to_upper()
+  pre_args += '-DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG'
 endif
-
 # TODO: this is very incomplete
 is_unixy = false
 if ['linux', 'cygwin', 'gnu'].contains(host_machine.system())
@@ -91,6 +89,7 @@ if is_unixy
   dep_wayland_client = dependency('wayland-client',
       required: get_option('with_wayland'), version : '>=1.11')
   dbus_dep = dependency('dbus-1', required: get_option('with_dbus')).partial_dependency(compile_args : true, includes : true)
+  dep_xkb = dependency('xkbcommon', required: get_option('with_x11').enabled() or get_option('with_wayland').enabled())
 else
   dep_x11 = null_dep
   dep_wayland_client = null_dep
@@ -104,6 +103,7 @@ endif
 if dep_wayland_client.found()
   vulkan_wsi_args += ['-DVK_USE_PLATFORM_WAYLAND_KHR']
   vulkan_wsi_deps += dep_wayland_client
+  vulkan_wsi_deps += dep_xkb
 endif
 
 if is_unixy and not dep_x11.found() and not dep_wayland_client.found()
@@ -166,9 +166,18 @@ else
   dep_rt = null_dep
 endif
 
-vkh_sp = subproject('vulkan-headers')
-vk_api_xml = vkh_sp.get_variable('vulkan_api_xml')
-dep_vulkan = vkh_sp.get_variable('vulkan_headers_dep')
+# Commented code can be used if mangohud start using latest SDK Vulkan-Headers
+# Allowing user to build mangohud using system Vulkan-Headers
+#if not dependency('VulkanHeaders').found()
+  vkh_sp = subproject('vulkan-headers')
+  vk_api_xml = vkh_sp.get_variable('vulkan_api_xml')
+  dep_vulkan = vkh_sp.get_variable('vulkan_headers_dep')
+#else
+#  dep_vulkan = dependency('VulkanHeaders', required: true)
+#  vk_api_xml = files('/usr/share/vulkan/registry/vk.xml')
+#endif
+
+
 
 vk_enum_to_str = custom_target(
   'vk_enum_to_str',
@@ -196,7 +205,8 @@ imgui_options = [
   'osx=disabled',
   'win=disabled',
   'allegro5=disabled',
-  'webgpu=disabled'
+  'webgpu=disabled',
+  'sdl_renderer=disabled'
 ]
 
 sizeof_ptr = cc.sizeof('void*')
@@ -212,38 +222,36 @@ if get_option('mangoapp')
     'glfw=enabled',
   ]
 endif
-
-dearimgui_sp = subproject('imgui', default_options: imgui_options)
-dearimgui_dep = dearimgui_sp.get_variable('imgui_dep')
+dearimgui_dep = dependency('imgui', fallback: ['imgui'], required: true, default_options: imgui_options)
 
 if is_unixy
-implot_sp = subproject('implot')
-implot_dep = implot_sp.get_variable('implot_dep')
-implot_lib = static_library(
-  'implot_static',
-  objects: implot_sp.get_variable('implot_lib').extract_all_objects()
-)
+implot_dep = dependency('implot', fallback: ['implot'], required: true, default_options: ['default_library=static'])
 else
 implot_dep = null_dep
 implot_lib = static_library('nulllib', [])
 endif
 
-spdlog_dep = cpp.find_library('spdlog', required: get_option('use_system_spdlog'))
-if not spdlog_dep.found()
-  spdlog_sp = subproject('spdlog', default_options: [
-    'default_library=static',
-    'compile_library=true',
-    'werror=false',
-    'tests=false',
-  ])
-  spdlog_dep = spdlog_sp.get_variable('spdlog_dep')
-else
-  spdlog_dep = dependency('spdlog', required: true)
+spdlog_options = [
+  'default_library=static',
+  'compile_library=true',
+  'werror=false',
+  'tests=disabled',
+  'external_fmt=disabled',
+  'std_format=disabled'
+]
+
+spdlog_dep = dependency('spdlog', required: false)
+
+if get_option('use_system_spdlog').disabled() or not spdlog_dep.found()
+    if get_option('use_system_spdlog').enabled()
+      warning('spdlog dependency not found following back to submodule')
+    endif
+    spdlog_sp = subproject('spdlog', default_options: spdlog_options)
+    spdlog_dep = spdlog_sp.get_variable('spdlog_dep')
 endif
 
 if ['windows', 'mingw'].contains(host_machine.system())
-  minhook_sp = subproject('minhook')
-  minhook_dep = minhook_sp.get_variable('minhook_dep')
+  minhook_dep = dependency('minhook', fallback: ['minhook', 'minhook_dep'], required: true)
   windows_deps = [
     minhook_dep,
   ]
@@ -251,7 +259,7 @@ else
   windows_deps = null_dep
 endif
 
-if get_option('mangoapp') or get_option('mangoapp_layer')
+if get_option('mangoapp')
   glfw3_dep = dependency('glfw3')
   glew_dep = dependency('glew')
 endif
@@ -271,6 +279,8 @@ if get_option('tests').enabled()
       'src/amdgpu.cpp',
       'src/cpu.cpp',
       'src/gpu.cpp',
+      'src/gpu_fdinfo.cpp',
+      'src/nvidia.cpp',
       'src/mesa/util/os_time.c',
       'src/file_utils.cpp',
     ),
@@ -278,6 +288,7 @@ if get_option('tests').enabled()
     dependencies: [
       cmocka_dep,
       spdlog_dep,
+      implot_dep,
       dearimgui_dep
     ],
     include_directories: inc_common)
@@ -286,5 +297,7 @@ if get_option('tests').enabled()
 
 endif
 
-# install helper sripts
-subdir('bin')
+# install helper scripts
+if get_option('mangoplot').enabled()
+  subdir('bin')
+endif
