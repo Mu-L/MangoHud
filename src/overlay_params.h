@@ -6,6 +6,8 @@
 #include <vector>
 #include <unordered_map>
 #include <cstdint>
+#include <condition_variable>
+#include <mutex>
 
 #ifdef __cplusplus
 extern "C" {
@@ -106,6 +108,13 @@ typedef unsigned long KeySym;
    OVERLAY_PARAM_BOOL(dynamic_frame_timing)          \
    OVERLAY_PARAM_BOOL(duration)                      \
    OVERLAY_PARAM_BOOL(inherit)                       \
+   OVERLAY_PARAM_BOOL(hdr)                           \
+   OVERLAY_PARAM_BOOL(refresh_rate)                  \
+   OVERLAY_PARAM_BOOL(frame_timing_detailed)         \
+   OVERLAY_PARAM_BOOL(winesync)                      \
+   OVERLAY_PARAM_BOOL(present_mode)                  \
+   OVERLAY_PARAM_BOOL(time_no_label)                 \
+   OVERLAY_PARAM_BOOL(display_server)                \
    OVERLAY_PARAM_CUSTOM(fps_sampling_period)         \
    OVERLAY_PARAM_CUSTOM(output_folder)               \
    OVERLAY_PARAM_CUSTOM(output_file)                 \
@@ -134,6 +143,7 @@ typedef unsigned long KeySym;
    OVERLAY_PARAM_CUSTOM(toggle_preset)               \
    OVERLAY_PARAM_CUSTOM(toggle_fps_limit)            \
    OVERLAY_PARAM_CUSTOM(toggle_logging)              \
+   OVERLAY_PARAM_CUSTOM(reset_fps_metrics)           \
    OVERLAY_PARAM_CUSTOM(reload_cfg)                  \
    OVERLAY_PARAM_CUSTOM(upload_log)                  \
    OVERLAY_PARAM_CUSTOM(upload_logs)                 \
@@ -154,6 +164,7 @@ typedef unsigned long KeySym;
    OVERLAY_PARAM_CUSTOM(text_color)                  \
    OVERLAY_PARAM_CUSTOM(wine_color)                  \
    OVERLAY_PARAM_CUSTOM(battery_color)               \
+   OVERLAY_PARAM_CUSTOM(network_color)               \
    OVERLAY_PARAM_CUSTOM(alpha)                       \
    OVERLAY_PARAM_CUSTOM(log_duration)                \
    OVERLAY_PARAM_CUSTOM(pci_dev)                     \
@@ -186,6 +197,9 @@ typedef unsigned long KeySym;
    OVERLAY_PARAM_CUSTOM(text_outline_thickness)      \
    OVERLAY_PARAM_CUSTOM(fps_text)                    \
    OVERLAY_PARAM_CUSTOM(device_battery)              \
+   OVERLAY_PARAM_CUSTOM(fps_metrics)                 \
+   OVERLAY_PARAM_CUSTOM(network)                     \
+   OVERLAY_PARAM_CUSTOM(gpu_list)                    \
 
 enum overlay_param_position {
    LAYER_POSITION_TOP_LEFT,
@@ -258,7 +272,9 @@ struct overlay_params {
    enum gl_size_query gl_size_query {GL_SIZE_DRAWABLE};
    bool gl_dont_flip {false};
    int64_t log_duration, log_interval;
-   unsigned cpu_color, gpu_color, vram_color, ram_color, engine_color, io_color, frametime_color, background_color, text_color, wine_color, battery_color;
+   unsigned cpu_color, gpu_color, vram_color, ram_color,
+            engine_color, io_color, frametime_color, background_color,
+            text_color, wine_color, battery_color, network_color;
    std::vector<unsigned> gpu_load_color;
    std::vector<unsigned> cpu_load_color;
    std::vector<unsigned> gpu_load_value;
@@ -281,14 +297,16 @@ struct overlay_params {
    std::vector<KeySym> upload_log;
    std::vector<KeySym> upload_logs;
    std::vector<KeySym> toggle_hud_position;
+   std::vector<KeySym> reset_fps_metrics;
    std::string time_format, output_folder, output_file;
    std::string pci_dev;
    std::string media_player_name;
-   std::string cpu_text, gpu_text, fps_text;
+   std::string cpu_text, fps_text;
    std::vector<std::string> blacklist;
    unsigned autostart_log;
    std::vector<std::string> media_player_format;
    std::vector<std::string> benchmark_percentiles;
+   std::vector<std::string> gpu_text;
    std::string font_file, font_file_text;
    uint32_t font_glyph_ranges;
    std::string custom_text_center;
@@ -306,6 +324,9 @@ struct overlay_params {
    unsigned text_outline_color;
    float text_outline_thickness;
    std::vector<std::string> device_battery;
+   std::vector<std::string> fps_metrics;
+   std::vector<std::string> network;
+   std::vector<unsigned> gpu_list;
 };
 
 const extern char *overlay_param_names[];
@@ -315,9 +336,11 @@ void parse_overlay_config(struct overlay_params *params,
 void presets(int preset, struct overlay_params *params, bool inherit=false);
 bool parse_preset_config(int preset, struct overlay_params *params);
 void add_to_options(struct overlay_params *params, std::string option, std::string value);
-
 #ifdef __cplusplus
 }
 #endif
+extern std::mutex config_mtx;
+extern std::condition_variable config_cv;
+extern bool config_ready;
 
 #endif /* MANGOHUD_OVERLAY_PARAMS_H */

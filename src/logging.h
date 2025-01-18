@@ -17,6 +17,7 @@ struct logData{
   double fps;
   float frametime;
   float cpu_load;
+  float cpu_power;
   int gpu_load;
   int cpu_temp;
   int gpu_temp;
@@ -60,6 +61,7 @@ public:
   std::string output_folder;
   const int64_t log_interval;
   const int64_t log_duration;
+  bool autostart_init = false;
 
 private:
   std::vector<logData> m_log_array;

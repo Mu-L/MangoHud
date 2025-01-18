@@ -21,14 +21,14 @@ A Vulkan and OpenGL overlay for monitoring FPS, temperatures, CPU/GPU load and m
   - [Normal usage](#normal-usage)
   - [OpenGL](#opengl)
   - [Hud configuration](#hud-configuration)
-    - [Environment Variables: **`MANGOHUD_CONFIG`** and **`MANGOHUD_CONFIGFILE`**](#environment-variables-mangohud_config-and-mangohud_configfile)
+    - [Environment Variables: **`MANGOHUD_CONFIG`**, **`MANGOHUD_CONFIGFILE`**, and **`MANGOHUD_PRESETSFILE`**](#environment-variables)
   - [Vsync](#vsync)
     - [OpenGL Vsync](#opengl-vsync)
     - [Vulkan Vsync](#vulkan-vsync)
   - [Keybindings](#keybindings)
   - [Workarounds](#workarounds)
   - [FPS logging](#fps-logging)
-    - [Online viualization: FlightlessMango.com](#online-viualization-flightlessmangocom)
+    - [Online visualization: FlightlessMango.com](#online-visualization-flightlessmangocom)
     - [Local visualization: `mangoplot`](#local-visualization-mangoplot)
 
 ## Installation - Build From Source
@@ -76,12 +76,29 @@ Install necessary development packages.
 - X11 (libx11-dev)
 - XNVCtrl (libxnvctrl-dev), optional, use `-Dwith_xnvctrl=disabled` option with `meson` to disable
 - D-Bus (libdbus-1-dev), optional, use `-Dwith_dbus=disabled` option with `meson` to disable
+- wayland-client
+- xcbcommon
 
 Python 3 libraries:
 
 - Mako (python3-mako or install with `pip`)
 
 If distro's packaged `meson` is too old and gives build errors, install newer version with `pip` (`python3-pip`).
+
+### Meson options
+
+| Option        | Default | Description
+| --------      | ------- | -
+| with_nvml     | enabled    |Required for NVIDIA GPU metrics on wayland
+| with_xnvctrl  | enabled    |Required for NVIDIA GPU metrics on older GPUs
+| with_x11      | enabled    |Required for keybinds on x11
+| with_wayland  | enabled    |Required for keybinds on wayland
+| with_dbus     | enabled    |Required for using the media features
+| mangoapp      | false      |Includes mangoapp
+| mangohudctl   | false      |Include mangohudctl
+| tests         | auto       |Includes tests
+| mangoplot     | true       |Includes mangoplot
+
 
 ### Building with build script
 
@@ -262,10 +279,17 @@ Or alternatively, add `MANGOHUD=1` to your shell profile (Vulkan only).
 
 ## OpenGL
 
-OpenGL games may also need `dlsym` hooking. Add `--dlsym` to your command like `mangohud --dlsym %command%` for Steam.
+OpenGL games may also need `dlsym` hooking, which is now enabled by default. Set the `MANGOHUD_DLSYM` env to `0` to disable like `MANGOHUD_DLSYM=0 %command%` for Steam.
 
 Some Linux native OpenGL games overrides LD_PRELOAD and stops MangoHud from working. You can sometimes fix this by editing LD_PRELOAD in the start script
 `LD_PRELOAD=/path/to/mangohud/lib/`
+
+## gamescope
+
+To enable mangohud with gamescope you need to install mangoapp.
+`gamescope --mangoapp %command%`
+
+Using normal mangohud with gamescope is not supported.
 
 ## Hud configuration
 
@@ -289,11 +313,15 @@ You can find an example config in /usr/share/doc/mangohud
 
 ---
 
-### Environment Variables: **`MANGOHUD_CONFIG`** and **`MANGOHUD_CONFIGFILE`**
+### Environment Variables
 
 You can also customize the hud by using the `MANGOHUD_CONFIG` environment variable while separating different options with a comma. This takes priority over any config file.
 
 You can also specify configuration file with `MANGOHUD_CONFIGFILE=/path/to/config` for applications whose names are hard to guess (java, python etc).
+
+You can also specify presets file with `MANGOHUD_PRESETSFILE=/path/to/config`. This is especially useful when running mangohud in a sandbox such as flatpak.
+
+You can also specify custom hud libraries for OpenGL using `MANGOHUD_OPENGL_LIBS=/path/to/libMangoHud_opengl.so`. This is useful for testing MangoHud without modifying the installation on your system.
 
 A partial list of parameters are below. See the config file for a complete list.
 Parameters that are enabled by default have to be explicitly disabled. These (currently) are `fps`, `frame_timing`, `cpu_stats` (cpu load), `gpu_stats` (gpu load), and each can be disabled by setting the corresponding variable to 0 (e.g., fps=0).
@@ -324,16 +352,17 @@ Parameters that are enabled by default have to be explicitly disabled. These (cu
 | `cpu_mhz`                          | Show the CPUs current MHz                                                             |
 | `cpu_power`<br>`gpu_power`         | Display CPU/GPU draw in watts                                                         |
 | `cpu_temp`<br>`gpu_temp`<br>`gpu_junction_temp`<br>`gpu_mem_temp`           | Display current CPU/GPU temperature                                                  |
-| `cpu_text`<br>`gpu_text`           | Override CPU and GPU text                                                             |
+| `cpu_text`<br>`gpu_text`           | Override CPU and GPU text. `gpu_text` is a list in case of multiple GPUs              |
 | `custom_text_center`               | Display a custom text centered useful for a header e.g `custom_text_center=FlightLessMango Benchmarks` |
 | `custom_text`                      | Display a custom text e.g `custom_text=Fsync enabled`                                 |
 | `debug`                            | Shows the graph of gamescope app frametimes and latency (only on gamescope obviously) |
 | `device_battery_icon`              | Display wirless device battery icon.                                                  |
 | `device_battery`                   | Display wireless device battery percent. Currently supported arguments `gamepad` and `mouse` e.g `device_battery=gamepad,mouse` |
+| `display_server`                   | Display the current display session (e.g. X11 or wayland)                             |
 | `dynamic_frame_timing`             | This changes frame_timing y-axis to correspond with the current maximum and minimum frametime instead of being a static 0-50 |
 | `engine_short_names`               | Display a short version of the used engine (e.g. `OGL` instead of `OpenGL`)           |
 | `engine_version`                   | Display OpenGL or vulkan and vulkan-based render engine's version                     |
-| `exec`                             | Display output of bash command in next column, e.g `custom_text=/home` , `exec=df -h /home \| tail -n 1`. Only works with `legacy_layout=0` |
+| `exec`                             | Display output of bash command in next column, e.g. `custom_text=/home` , `exec=df -h /home \| tail -n 1`. Only works with `legacy_layout=0` |
 | `exec_name`                        | Display current exec name                                                             |
 | `fan`                              | Shows the Steam Deck fan rpm                                                          |
 | `fcat`                             | Enables frame capture analysis                                                        |
@@ -344,28 +373,35 @@ Parameters that are enabled by default have to be explicitly disabled. These (cu
 | `font_glyph_ranges`                | Specify extra font glyph ranges, comma separated: `korean`, `chinese`, `chinese_simplified`, `japanese`, `cyrillic`, `thai`, `vietnamese`, `latin_ext_a`, `latin_ext_b`. If you experience crashes or text is just squares, reduce font size or glyph ranges |
 | `font_scale=`                      | Set global font scale. Default is `1.0`                                               |
 | `font_scale_media_player`          | Change size of media player text relative to `font_size`                              |
-| `font_size=`                       | Customizeable font size. Default is `24`                                              |
-| `font_size_text=`                  | Customizeable font size for other text like media metadata. Default is `24`           |
+| `font_size=`                       | Customizable font size. Default is `24`                                              |
+| `font_size_text=`                  | Customizable font size for other text like media metadata. Default is `24`           |
 | `fps_color_change`                 | Change the FPS text color depepending on the FPS value                                |
 | `fps_color=`                       | Choose the colors that the fps changes to when `fps_color_change` is enabled. Corresponds with fps_value. Default is `b22222,fdfd09,39f900`   |
 | `fps_limit_method`                 | If FPS limiter should wait before or after presenting a frame. Choose `late` (default) for the lowest latency or `early` for the smoothest frametimes |
 | `fps_limit`                        | Limit the apps framerate. Comma-separated list of one or more FPS values. `0` means unlimited |
 | `fps_only`                         | Show FPS only. ***Not meant to be used with other display params***                   |
 | `fps_sampling_period=`             | Time interval between two sampling points for gathering the FPS in milliseconds. Default is `500`   |
-| `fps_value=`                       | Choose the break points where `fps_color_change` changes colors between. E.g `60,144`, default is `30,60` |
+| `fps_value`                        | Choose the break points where `fps_color_change` changes colors between. E.g `60,144`, default is `30,60` |
+| `fps_metrics`                      | Takes a list of decimal values or the value avg, e.g `avg,0.001`                      |
+| `reset_fps_metrics`                | Reset fps metrics keybind, default is `Shift_R+F9`                                    |
+| `fps_text`                         | Display custom text for engine name in front of FPS                                   |
 | `frame_count`                      | Display frame count                                                                   |
 | `frametime`                        | Display frametime next to FPS text                                                    |
+| `frame_timing_detailed`            | Display frame timing in a more detailed chart                                         |
 | `fsr`                              | Display the status of FSR (only works in gamescope)                                   |
+| `hdr`                              | Display the status of HDR (only works in gamescope)                                   |
+| `refresh_rate`                     | Display the current refresh rate (only works in gamescope)                            |
 | `full`                             | Enable most of the toggleable parameters (currently excludes `histogram`)             |
 | `gamemode`                         | Show if GameMode is on                                                                |
-| `gpu_color`<br>`cpu_color`<br>`vram_color`<br>`ram_color`<br>`io_color`<br>`engine_color`<br>`frametime_color`<br>`background_color`<br>`text_color`<br>`media_player_color`         | Change default colors: `gpu_color=RRGGBB` |
+| `gpu_color`<br>`cpu_color`<br>`vram_color`<br>`ram_color`<br>`io_color`<br>`engine_color`<br>`frametime_color`<br>`background_color`<br>`text_color`<br>`media_player_color`<br>`network_color`         | Change default colors: `gpu_color=RRGGBB` |
 | `gpu_core_clock`<br>`gpu_mem_clock`| Display GPU core/memory frequency                                                     |
-| `gpu_fan`                          | GPU fan in rpm (only works on AMD GPUs)                                               |
+| `gpu_fan`                          | GPU fan in rpm on AMD, FAN in percent on NVIDIA |
 | `gpu_load_change`                  | Change the color of the GPU load depending on load                                    |
 | `gpu_load_color`                   | Set the colors for the gpu load change low,medium and high. e.g `gpu_load_color=0000FF,00FFFF,FF00FF` |
 | `gpu_load_value`                   | Set the values for medium and high load e.g `gpu_load_value=50,90`                    |
 | `gpu_name`                         | Display GPU name from pci.ids                                                         |
 | `gpu_voltage`                      | Display GPU voltage (only works on AMD GPUs)                                          |
+| `gpu_list`                         | List GPUs to display `gpu_list=0,1`                                                   |
 | `hide_fsr_sharpness`               | Hides the sharpness info for the `fsr` option (only available in gamescope)           |
 | `histogram`                        | Change FPS graph to histogram                                                         |
 | `horizontal`                       | Display Mangohud in a horizontal position                                             |
@@ -406,10 +442,11 @@ Parameters that are enabled by default have to be explicitly disabled. These (cu
 | `throttling_status`                | Show if GPU is throttling based on Power, current, temp or "other" (Only shows if throttling is currently happening). Currently disabled by default for Nvidia as it causes lag on 3000 series |
 | `throttling_status_graph`          | Same as `throttling_status` but displays throttling in the frametime graph and only power and temp throttling |
 | `time`<br>`time_format=%T`         | Display local time. See [std::put_time](https://en.cppreference.com/w/cpp/io/manip/put_time) for formatting help. NOTE: Sometimes apps may set `TZ` (timezone) environment variable to UTC/GMT |
+| `time_no_label`                    | Remove the label before time                                                          |
 | `toggle_fps_limit`                 | Cycle between FPS limits (needs at least two values set with `fps_limit`). Defaults to `Shift_L+F1`                                    |
 | `toggle_preset`                    | Cycle between Presets. Defaults to `Shift_R+F10`                                      |
 | `toggle_hud=`<br>`toggle_logging=` | Modifiable toggle hotkeys. Default are `Shift_R+F12` and `Shift_L+F2`, respectively   |
-| `toggle_hud_position`              | Toggle MangoHud postion. Default is `R_Shift+F11`                                     |
+| `toggle_hud_position`              | Toggle MangoHud position. Default is `R_Shift+F11`                                     |
 | `trilinear`                        | Force trilinear filtering                                                             |
 | `upload_log`                       | Change keybind for uploading log                                                      |
 | `upload_logs`                      | Enables automatic uploads of logs to flightlessmango.com                              |
@@ -417,9 +454,12 @@ Parameters that are enabled by default have to be explicitly disabled. These (cu
 | `vkbasalt`                         | Show if vkBasalt is on                                                                |
 | `vsync`<br> `gl_vsync`             | Set Vsync for OpenGL or Vulkan                                                        |
 | `vulkan_driver`                    | Display used Vulkan driver (radv/amdgpu-pro/amdvlk)                                   |
-| `width=`<br>`height=`              | Customizeable HUD dimensions (in pixels)                                              |
+| `width=`<br>`height=`              | Customizable HUD dimensions (in pixels)                                              |
 | `wine_color`                       | Change color of the wine/proton text                                                  |
 | `wine`                             | Show current Wine or Proton version in use                                            |
+| `winesync`                         | Show wine sync method in use                                                          |
+| `present_mode`                     | Shows current vulkan [present mode](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkPresentModeKHR.html) or vsync status in opengl  |
+| `network`                          | Show network interfaces tx and rx kb/s. You can specify interface with `network=eth0` |
 
 Example: `MANGOHUD_CONFIG=cpu_temp,gpu_temp,position=top-right,height=500,font_size=32`
 Because comma is also used as option delimiter and needs to be escaped for values with a backslash, you can use `+` like `MANGOHUD_CONFIG=fps_limit=60+30+0` instead.
@@ -453,6 +493,7 @@ Not all vulkan vsync options may be supported on your device, you can check what
 - `Shift_L+F2` : Toggle Logging
 - `Shift_L+F4` : Reload Config
 - `Shift_R+F12` : Toggle Hud
+- `Shift_R+9` : Reset FPS metrics
 
 ## Workarounds
 
@@ -470,7 +511,7 @@ When you toggle logging (default keybind is `Shift_L+F2`), a file is created wit
 
 Log files can be visualized with two different tools: online and locally.
 
-### Online viualization: FlightlessMango.com
+### Online visualization: FlightlessMango.com
 Log files can be (batch) uploaded to [FlightlessMango.com](https://flightlessmango.com/games/user_benchmarks), which will then take care of creating a frametime graph and a summary with 1% min / average framerate / 97th percentile in a table form and a horizontal bar chart form.
 
 Notes:

@@ -51,7 +51,7 @@ static uint32_t screenWidth, screenHeight;
 
 static unsigned int get_prop(const char* propName){
     Display *x11_display = glfwGetX11Display();
-    Atom gamescope_focused = XInternAtom(x11_display, propName, true);
+    Atom gamescope_focused = XInternAtom(x11_display, propName, false);
     auto scr = DefaultScreen(x11_display);
     auto root = RootWindow(x11_display, scr);
     Atom actual;
@@ -73,7 +73,7 @@ static unsigned int get_prop(const char* propName){
         }
         return i;
     }
-    return 0;
+    return -1;
 }
 
 static void ctrl_thread(){
@@ -133,10 +133,13 @@ static void ctrl_thread(){
 bool new_frame = false;
 
 static void gamescope_frametime(uint64_t app_frametime_ns, uint64_t latency_ns){
-    float app_frametime_ms = app_frametime_ns / 1000000.f;
-    HUDElements.gamescope_debug_app.push_back(app_frametime_ms);
-    if (HUDElements.gamescope_debug_app.size() > 200)
-        HUDElements.gamescope_debug_app.erase(HUDElements.gamescope_debug_app.begin());
+    if (app_frametime_ns != uint64_t(-1))
+    {
+        float app_frametime_ms = app_frametime_ns / 1000000.f;
+        HUDElements.gamescope_debug_app.push_back(app_frametime_ms);
+        if (HUDElements.gamescope_debug_app.size() > 200)
+            HUDElements.gamescope_debug_app.erase(HUDElements.gamescope_debug_app.begin());
+    }
 
     float latency_ms = latency_ns / 1000000.f;
     if (latency_ns == uint64_t(-1))
@@ -159,50 +162,66 @@ static void msg_read_thread(){
     while (1){
         // make sure that the message recieved is compatible
         // and that we're not trying to use variables that don't exist (yet)
-        size_t msg_size = msgrcv(msgid, (void *) raw_msg, sizeof(raw_msg), 1, 0) + sizeof(long);
-        if (hdr->version == 1){
-            if (msg_size > offsetof(struct mangoapp_msg_v1, visible_frametime_ns)){
-                if (!params.no_display || logger->is_active())
-                    update_hud_info_with_frametime(sw_stats, params, vendorID, mangoapp_v1->visible_frametime_ns);
+        size_t msg_size = msgrcv(msgid, (void *) raw_msg, sizeof(raw_msg), 1, 0);
+        if (msg_size != size_t(-1))
+        {
+            if (hdr->version == 1){
+                if (msg_size > offsetof(struct mangoapp_msg_v1, pid))
+                    HUDElements.g_gamescopePid = mangoapp_v1->pid;
 
-                if (msg_size > offsetof(mangoapp_msg_v1, fsrUpscale)){
-                    HUDElements.g_fsrUpscale = mangoapp_v1->fsrUpscale;
-                    if (params.fsr_steam_sharpness < 0)
-                        HUDElements.g_fsrSharpness = mangoapp_v1->fsrSharpness;
-                    else
-                       HUDElements.g_fsrSharpness = params.fsr_steam_sharpness - mangoapp_v1->fsrSharpness;
-                }
-                if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_mangoapp_steam]){
-                    steam_focused = get_prop("GAMESCOPE_FOCUSED_APP_GFX") == 769;
-                } else {
-                    steam_focused = false;
-                }
-                // if (!steam_focused && mangoapp_v1->pid != previous_pid){
-                //     string path = "/tmp/mangoapp/" + to_string(mangoapp_v1->pid) + ".json";
-                //     ifstream i(path);
-                //     if (i.fail()){
-                //         sw_stats.engine = EngineTypes::GAMESCOPE;
-                //     } else {
-                //         json j;
-                //         i >> j;
-                //         sw_stats.engine = static_cast<EngineTypes> (j["engine"]);
-                //     }
-                //     previous_pid = mangoapp_v1->pid;
-                // }
-                if (msg_size > offsetof(mangoapp_msg_v1, latency_ns))
-                    gamescope_frametime(mangoapp_v1->app_frametime_ns, mangoapp_v1->latency_ns);
+                if (msg_size > offsetof(struct mangoapp_msg_v1, visible_frametime_ns)){
+                    bool should_new_frame = false;
+                    if (mangoapp_v1->visible_frametime_ns != ~(0lu) && (!params.no_display || logger->is_active())) {
+                        update_hud_info_with_frametime(sw_stats, params, vendorID, mangoapp_v1->visible_frametime_ns);
+                        should_new_frame = true;
+                    }
 
-                {
-                    std::unique_lock<std::mutex> lk(mangoapp_m);
-                    new_frame = true;
+                    if (msg_size > offsetof(mangoapp_msg_v1, fsrUpscale)){
+                        HUDElements.g_fsrUpscale = mangoapp_v1->fsrUpscale;
+                        if (params.fsr_steam_sharpness < 0)
+                            HUDElements.g_fsrSharpness = mangoapp_v1->fsrSharpness;
+                        else
+                        HUDElements.g_fsrSharpness = params.fsr_steam_sharpness - mangoapp_v1->fsrSharpness;
+                    }
+                    if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_mangoapp_steam]){
+                        steam_focused = get_prop("GAMESCOPE_FOCUSED_APP_GFX") == 769;
+                    } else {
+                        steam_focused = false;
+                    }
+                    // if (!steam_focused && mangoapp_v1->pid != previous_pid){
+                    //     string path = "/tmp/mangoapp/" + to_string(mangoapp_v1->pid) + ".json";
+                    //     ifstream i(path);
+                    //     if (i.fail()){
+                    //         sw_stats.engine = EngineTypes::GAMESCOPE;
+                    //     } else {
+                    //         json j;
+                    //         i >> j;
+                    //         sw_stats.engine = static_cast<EngineTypes> (j["engine"]);
+                    //     }
+                    //     previous_pid = mangoapp_v1->pid;
+                    // }
+                    if (msg_size > offsetof(mangoapp_msg_v1, latency_ns))
+                        gamescope_frametime(mangoapp_v1->app_frametime_ns, mangoapp_v1->latency_ns);
+
+                    if (should_new_frame)
+                    {
+                        {
+                            std::unique_lock<std::mutex> lk(mangoapp_m);
+                            new_frame = true;
+                        }
+                        mangoapp_cv.notify_one();
+                        screenWidth = mangoapp_v1->outputWidth;
+                        screenHeight = mangoapp_v1->outputHeight;
+                    }
                 }
-                mangoapp_cv.notify_one();
-                screenWidth = mangoapp_v1->outputWidth;
-                screenHeight = mangoapp_v1->outputHeight;
+            } else {
+                printf("Unsupported mangoapp struct version: %i\n", hdr->version);
+                exit(1);
             }
-        } else {
-            printf("Unsupported mangoapp struct version: %i\n", hdr->version);
-            exit(1);
+        }
+        else
+        {
+            printf("mangoapp: msgrcv returned -1 with error %d - %s\n", errno, strerror(errno));
         }
     }
 }
@@ -210,6 +229,7 @@ static void msg_read_thread(){
 static const char *GamescopeOverlayProperty = "GAMESCOPE_EXTERNAL_OVERLAY";
 
 static GLFWwindow* init(const char* glsl_version){
+    init_spdlog();
     GLFWwindow *window = glfwCreateWindow(1280, 800, "mangoapp overlay window", NULL, NULL);
     Display *x11_display = glfwGetX11Display();
     Window x11_window = glfwGetX11Window(window);
@@ -242,6 +262,11 @@ static void shutdown(GLFWwindow* window){
     glfwDestroyWindow(window);
 }
 
+static void get_atom_info(){
+    HUDElements.hdr_status = get_prop("GAMESCOPE_COLOR_APP_WANTS_HDR_FEEDBACK");
+    HUDElements.refresh = get_prop("GAMESCOPE_DISPLAY_REFRESH_RATE_FEEDBACK");
+}
+
 static bool render(GLFWwindow* window) {
     if (HUDElements.colors.update)
         HUDElements.convert_colors(params);
@@ -253,6 +278,7 @@ static bool render(GLFWwindow* window) {
     overlay_new_frame(params);
     position_layer(sw_stats, params, window_size);
     render_imgui(sw_stats, params, window_size, true);
+    get_atom_info();
     overlay_end_frame();
     if (screenWidth && screenHeight)
         glfwSetWindowSize(window, screenWidth, screenHeight);
@@ -262,6 +288,8 @@ static bool render(GLFWwindow* window) {
 
 int main(int, char**)
 {
+    XInitThreads();
+
     // Setup window
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
@@ -301,11 +329,13 @@ int main(int, char**)
     window_size = ImVec2(params.width, params.height);
     deviceName = (char*)glGetString(GL_RENDERER);
     sw_stats.deviceName = deviceName;
-
+    SPDLOG_DEBUG("mangoapp deviceName: {}", deviceName);
     #define GLX_RENDERER_VENDOR_ID_MESA 0x8183
     auto pfn_glXQueryCurrentRendererIntegerMESA = (Bool (*)(int, unsigned int*)) (glfwGetProcAddress("glXQueryCurrentRendererIntegerMESA"));
-    if (pfn_glXQueryCurrentRendererIntegerMESA) {
+    // This will return 0x0 vendorID on NVIDIA so just go to else
+    if (pfn_glXQueryCurrentRendererIntegerMESA && vendorID != 0x0) {
         pfn_glXQueryCurrentRendererIntegerMESA(GLX_RENDERER_VENDOR_ID_MESA, &vendorID);
+        SPDLOG_DEBUG("mangoapp vendorID: {:#x}", vendorID);
     } else {
         if (deviceName.find("Radeon") != std::string::npos
         || deviceName.find("AMD") != std::string::npos){
@@ -316,14 +346,21 @@ int main(int, char**)
             vendorID = 0x10de;
         }
     }
-    init_gpu_stats(vendorID, 0, params);
+
+    HUDElements.vendorID = vendorID;
     init_system_info();
     sw_stats.engine = EngineTypes::GAMESCOPE;
     std::thread(msg_read_thread).detach();
     std::thread(ctrl_thread).detach();
     if(!logger) logger = std::make_unique<Logger>(HUDElements.params);
+    Atom noFocusAtom = XInternAtom(x11_display, "GAMESCOPE_NO_FOCUS", False);
+    uint32_t value = 1;
+    XChangeProperty(x11_display, x11_window, noFocusAtom, XA_CARDINAL, 32,
+                    PropModeReplace, (unsigned char *)&value, 1);
     // Main loop
     while (!glfwWindowShouldClose(window)){
+        check_keybinds(params);
+
         if (!params.no_display){
             if (mangoapp_paused){
                 glfwRestoreWindow(window);
@@ -331,18 +368,15 @@ int main(int, char**)
                 XChangeProperty(x11_display, x11_window, overlay_atom, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&value, 1);
                 XSync(x11_display, 0);
                 mangoapp_paused = false;
-                {
-                    amdgpu_run_thread = true;
-                    amdgpu_c.notify_one();
-                }
+                // resume all GPU threads
+                for (auto gpu : gpus->available_gpus)
+                    gpu->resume();
             }
             {
                 std::unique_lock<std::mutex> lk(mangoapp_m);
                 mangoapp_cv.wait(lk, []{return new_frame || params.no_display;});
                 new_frame = false;
             }
-
-            check_keybinds(params, vendorID);
             // Start the Dear ImGui frame
             {
                 if (render(window)) {
@@ -374,10 +408,10 @@ int main(int, char**)
             XChangeProperty(x11_display, x11_window, overlay_atom, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&value, 1);
             XSync(x11_display, 0);
             mangoapp_paused = true;
-            {
-                amdgpu_run_thread = false;
-                amdgpu_c.notify_one();
-            }
+            // pause all GPUs threads
+            for (auto gpu : gpus->available_gpus)
+                gpu->pause();
+
             std::unique_lock<std::mutex> lk(mangoapp_m);
             mangoapp_cv.wait(lk, []{return !params.no_display;});
         }

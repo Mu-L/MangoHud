@@ -1,6 +1,7 @@
 #include <sstream>
 #include <iomanip>
 #include <array>
+#include <algorithm>
 #include <spdlog/spdlog.h>
 #include "logging.h"
 #include "overlay.h"
@@ -8,6 +9,7 @@
 #include "file_utils.h"
 #include "string_utils.h"
 #include "version.h"
+#include "fps_metrics.h"
 
 using namespace std;
 
@@ -26,7 +28,8 @@ string exec(string command) {
 #endif
     std::array<char, 128> buffer;
     std::string result;
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
+    auto deleter = [](FILE* ptr){ pclose(ptr); };
+    std::unique_ptr<FILE, decltype(deleter)> pipe(popen(command.c_str(), "r"), deleter);
     if (!pipe) {
       return "popen failed!";
     }
@@ -64,47 +67,109 @@ static bool compareByFps(const logData &a, const logData &b)
 
 static void writeSummary(string filename){
   auto& logArray = logger->get_log_data();
+  // if the log is stopped/started too fast we might end up with an empty vector.
+  // in that case, just bail.
+  if (logArray.size() == 0){
+    logger->stop_logging();
+    return;
+  }
+
   filename = filename.substr(0, filename.size() - 4);
   filename += "_summary.csv";
   SPDLOG_INFO("{}", filename);
   SPDLOG_DEBUG("Writing summary log file [{}]", filename);
   std::ofstream out(filename, ios::out | ios::app);
   if (out){
-    out << "0.1% Min FPS," << "1% Min FPS," << "97% Percentile FPS," << "Average FPS," << "GPU Load," << "CPU Load" << "\n";
+    out << "0.1% Min FPS," << "1% Min FPS," << "97% Percentile FPS," << "Average FPS," << "GPU Load," << "CPU Load," << "Average Frame Time," << "Average GPU Temp," << "Average CPU Temp," << "Average VRAM Used," << "Average RAM Used," << "Average Swap Used," << "Peak GPU Load," << "Peak CPU Load," << "Peak GPU Temp," << "Peak CPU Temp," << "Peak VRAM Used," << "Peak RAM Used," << "Peak Swap Used" << "\n";
     std::vector<logData> sorted = logArray;
     std::sort(sorted.begin(), sorted.end(), compareByFps);
     float total = 0.0f;
-    float total_cpu = 0.0f;
     float total_gpu = 0.0f;
+    float total_cpu = 0.0f;
+    int total_gpu_temp = 0.0f;
+    int total_cpu_temp = 0.0f;
+    float total_vram = 0.0f;
+    float total_ram = 0.0f;
+    float total_swap = 0.0f;
+    int peak_gpu = 0.0f;
+    float peak_cpu = 0.0f;
+    int peak_gpu_temp = 0.0f;
+    int peak_cpu_temp = 0.0f;
+    float peak_vram = 0.0f;
+    float peak_ram = 0.0f;
+    float peak_swap = 0.0f;
     float result;
-    float percents[2] = {0.001, 0.01};
-    for (auto percent : percents){
-      total = 0;
-      size_t idx = ceil(sorted.size() * percent);
-      for (size_t i = 0; i < idx; i++){
-        total = total + sorted[i].frametime;
-      }
-      result = 1000 / (total / idx);
-      out << fixed << setprecision(1) << result << ",";
-    }
-    // 97th percentile
-    result = sorted.empty() ? 0.0f : 1000 / sorted[floor(0.97 * (sorted.size() - 1))].frametime;
-    out << fixed << setprecision(1) << result << ",";
-    // avg
+    std::vector<float> fps_values;
+    for (auto& data : sorted)
+      fps_values.push_back(data.fps);
+
+    std::unique_ptr<fpsMetrics> fpsmetrics;
+    std::vector<std::string> metrics {"0.001", "0.01", "0.97"};
+    fpsmetrics = std::make_unique<fpsMetrics>(metrics, fps_values);
+    for (auto& metric : fpsmetrics->metrics)
+      out << metric.value << ",";
+
+    fpsmetrics.reset();
+
     total = 0;
     for (auto input : sorted){
       total = total + input.frametime;
-      total_cpu = total_cpu + input.cpu_load;
       total_gpu = total_gpu + input.gpu_load;
+      total_cpu = total_cpu + input.cpu_load;
+      total_gpu_temp = total_gpu_temp + input.gpu_temp;
+      total_cpu_temp = total_cpu_temp + input.cpu_temp;
+      total_vram = total_vram + input.gpu_vram_used;
+      total_ram = total_ram + input.ram_used;
+      total_swap = total_swap + input.swap_used;
+      peak_gpu = std::max(peak_gpu, input.gpu_load);
+      peak_cpu = std::max(peak_cpu, input.cpu_load);
+      peak_gpu_temp = std::max(peak_gpu_temp, input.gpu_temp);
+      peak_cpu_temp = std::max(peak_cpu_temp, input.cpu_temp);
+      peak_vram = std::max(peak_vram, input.gpu_vram_used);
+      peak_ram = std::max(peak_ram, input.ram_used);
+      peak_swap = std::max(peak_swap, input.swap_used);
     }
+    // Average FPS
     result = 1000 / (total / sorted.size());
     out << fixed << setprecision(1) << result << ",";
-    // GPU
+    // GPU Load (Average)
     result = total_gpu / sorted.size();
     out << result << ",";
-    // CPU
+    // CPU Load (Average)
     result = total_cpu / sorted.size();
-    out << result;
+    out << result << ",";
+    // Average Frame Time
+    result = total / sorted.size();
+    out << result << ",";
+    // Average GPU Temp
+    result = total_gpu_temp / sorted.size();
+    out << result << ",";
+    // Average CPU Temp
+    result = total_cpu_temp / sorted.size();
+    out << result << ",";
+    // Average VRAM Used
+    result = total_vram / sorted.size();
+    out << result << ",";
+    // Average RAM Used
+    result = total_ram / sorted.size();
+    out << result << ",";
+    // Average Swap Used
+    result = total_swap / sorted.size();
+    out << result << ",";
+    // Peak GPU Load
+    out << peak_gpu << ",";
+    // Peak CPU Load
+    out << peak_cpu << ",";
+    // Peak GPU Temp
+    out << peak_gpu_temp << ",";
+    // Peak CPU Temp
+    out << peak_cpu_temp << ",";
+    // Peak VRAM Used
+    out << peak_vram << ",";
+    // Peak RAM Used
+    out << peak_ram << ",";
+    // Peak Swap Used
+    out << peak_swap;
   } else {
     SPDLOG_ERROR("Failed to write log file");
   }
@@ -125,7 +190,7 @@ static void writeFileHeaders(ofstream& out){
     if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_log_versioning])
       out << "--------------------FRAME METRICS--------------------" << endl;
 
-    out << "fps," << "frametime," << "cpu_load," << "gpu_load," << "cpu_temp," << "gpu_temp," << "gpu_core_clock," << "gpu_mem_clock," << "gpu_vram_used," << "gpu_power," << "ram_used," << "swap_used," << "process_rss," << "elapsed" << endl;
+    out << "fps," << "frametime," << "cpu_load," << "cpu_power," << "gpu_load," << "cpu_temp," << "gpu_temp," << "gpu_core_clock," << "gpu_mem_clock," << "gpu_vram_used," << "gpu_power," << "ram_used," << "swap_used," << "process_rss," << "elapsed" << endl;
 
 }
 
@@ -140,6 +205,7 @@ void Logger::writeToFile(){
     output_file << logArray.back().fps << ",";
     output_file << logArray.back().frametime << ",";
     output_file << logArray.back().cpu_load << ",";
+    output_file << logArray.back().cpu_power << ",";
     output_file << logArray.back().gpu_load << ",";
     output_file << logArray.back().cpu_temp << ",";
     output_file << logArray.back().gpu_temp << ",";
@@ -268,59 +334,20 @@ void autostart_log(int sleep) {
 }
 
 void Logger::calculate_benchmark_data(){
-  vector<float> sorted {};
+  vector<float> fps_values {};
   for (auto& point : m_log_array)
-    sorted.push_back(point.frametime);
+    fps_values.push_back(point.fps);
 
-  std::sort(sorted.begin(), sorted.end(), [](float a, float b) {
-    return a > b;
-  });
   benchmark.percentile_data.clear();
 
-  benchmark.total = 0.f;
-  for (auto frametime_ : sorted){
-    benchmark.total = benchmark.total + frametime_;
-  }
+  std::vector<std::string> metrics {"0.97", "avg", "0.01", "0.001"};
+  std::unique_ptr<fpsMetrics> fpsmetrics;
+  if (!HUDElements.params->fps_metrics.empty())
+    metrics = HUDElements.params->fps_metrics;
+    
+  fpsmetrics = std::make_unique<fpsMetrics>(metrics, fps_values);
+  for (auto& metric : fpsmetrics->metrics)
+    benchmark.percentile_data.push_back({metric.display_name, metric.value});
 
-  size_t max_label_size = 0;
-
-  float result;
-  for (std::string percentile : HUDElements.params->benchmark_percentiles) {
-      // special case handling for a mean-based average
-      if (percentile == "AVG") {
-        result = benchmark.total / sorted.size();
-      } else {
-        // the percentiles are already validated when they're parsed from the config.
-        float fraction = parse_float(percentile) / 100;
-
-        result = sorted.empty() ? 0.0f : sorted[(fraction * sorted.size()) - 1];
-        percentile += "%";
-      }
-
-      if (percentile.length() > max_label_size)
-        max_label_size = percentile.length();
-
-      benchmark.percentile_data.push_back({percentile, (1000 / result)});
-  }
-  string label;
-  float mins[2] = {0.01f, 0.001f};
-  for (auto percent : mins){
-    size_t percentile_pos = sorted.size() * percent;
-    percentile_pos = std::min(percentile_pos, sorted.size() - 1);
-    float result = 1000 / sorted[percentile_pos];
-
-    if (percent == 0.001f)
-      label = "0.1%";
-    if (percent == 0.01f)
-      label = "1%";
-
-    if (label.length() > max_label_size)
-      max_label_size = label.length();
-
-    benchmark.percentile_data.push_back({label, result});
-  }
-
-   for (auto& entry : benchmark.percentile_data) {
-      entry.first.append(max_label_size - entry.first.length(), ' ');
-   }
+  fpsmetrics.reset();
 }

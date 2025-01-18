@@ -11,6 +11,7 @@
 #include <windows.h>
 #endif
 #include "timing.hpp"
+#include "gpu.h"
 
 typedef struct CPUData_ {
    unsigned long long int totalTime;
@@ -56,6 +57,7 @@ enum {
 };
 
 struct CPUPowerData {
+   virtual ~CPUPowerData() = default;
    int source;
 };
 

@@ -36,7 +36,7 @@ bool libnvctrl_loader::Load(const std::string& library_name) {
 #if defined(LIBRARY_LOADER_NVCTRL_H_DLOPEN)
   library_ = dlopen(library_name.c_str(), RTLD_LAZY);
   if (!library_) {
-    SPDLOG_ERROR("Failed to open " MANGOHUD_ARCH " {}: {}", library_name, dlerror());
+    SPDLOG_DEBUG("Failed to open " MANGOHUD_ARCH " {}: {}", library_name, dlerror());
     return false;
   }
 
@@ -76,6 +76,14 @@ bool libnvctrl_loader::Load(const std::string& library_name) {
       reinterpret_cast<decltype(this->XNVCTRLQueryTargetAttribute64)>(
           dlsym(library_, "XNVCTRLQueryTargetAttribute64"));
   if (!XNVCTRLQueryTargetAttribute64) {
+    CleanUp(true);
+    return false;
+  }
+
+  XNVCTRLQueryTargetCount =
+      reinterpret_cast<decltype(this->XNVCTRLQueryTargetCount)>(
+          dlsym(library_, "XNVCTRLQueryTargetCount"));
+  if (!XNVCTRLQueryTargetCount) {
     CleanUp(true);
     return false;
   }
