@@ -177,6 +177,7 @@ public:
     sd_bus_slot* slot;
     std::atomic<bool> active {true};
     std::deque<ready_frame> frame_queue;
+    std::atomic<uint64_t> hud_seq{0};
     std::atomic<bool> stop {false};
 
     Client(pid_t pid_, IPCServer* ipc_, MangoHudServer* server_, sd_bus* bus_)

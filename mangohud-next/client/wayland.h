@@ -44,16 +44,6 @@ struct shm_buffer {
 
 struct presentation_feedback_state {
     std::atomic<bool> output_pending{false};
-    std::atomic<bool> hud_pending{false};
-    std::atomic<uint64_t> hud_seq{0};
-
-    std::atomic<bool>& pending(SampleType type) {
-        return type == SampleType::Hud ? hud_pending : output_pending;
-    }
-
-    uint64_t next_hud_seq() {
-        return hud_seq.fetch_add(1, std::memory_order_relaxed);
-    }
 };
 
 struct focus_signal_state {
@@ -208,11 +198,6 @@ struct presentation_feedback_data {
     SampleType type = SampleType::Frame;
     const char* surface = nullptr;
     Wayland* wayland = nullptr;
-
-    void clear_pending() {
-        if (feedback_state)
-            feedback_state->pending(type).store(false, std::memory_order_release);
-    }
 };
 
 class Wayland {
@@ -365,7 +350,6 @@ private:
     };
 
     inline static char app_surface_name[] = "app";
-    inline static char hud_surface_name[] = "hud";
 
     bool request_presentation_feedback(const std::shared_ptr<surface_data>& surf_data, wl_globals& globals,
                                        wl_surface* surface, SampleType type, const char* surface_name);

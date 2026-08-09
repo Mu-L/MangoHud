@@ -700,6 +700,9 @@ void Client::frame_ready(uint32_t idx, unique_fd fd) {
             return r;
         }
 
+        self->stats_for(SampleType::Hud).add_sample(SampleType::Hud,
+                                                    self->hud_seq.fetch_add(1, std::memory_order_relaxed),
+                                                    os_time_get_nano());
         return 0;
     });
 }

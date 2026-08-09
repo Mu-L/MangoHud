@@ -23,13 +23,16 @@ bool Wayland::request_presentation_feedback(const std::shared_ptr<surface_data>&
     if (!surf_data || !surface || !globals.presentation)
         return false;
 
+    if (type != SampleType::Output)
+        return false;
+
     auto feedback_state = surf_data->presentation_feedback;
-    if (feedback_state->pending(type).exchange(true, std::memory_order_acq_rel))
+    if (feedback_state->output_pending.exchange(true, std::memory_order_acq_rel))
         return false;
 
     auto* feedback = wp_presentation_feedback(globals.presentation, surface);
     if (!feedback) {
-        feedback_state->pending(type).store(false, std::memory_order_release);
+        feedback_state->output_pending.store(false, std::memory_order_release);
         return false;
     }
 
@@ -38,7 +41,7 @@ bool Wayland::request_presentation_feedback(const std::shared_ptr<surface_data>&
     if (wp_presentation_feedback_add_listener(feedback, &presentation_feedback_listener, feedback_data) != 0) {
         wp_presentation_feedback_destroy(feedback);
         delete feedback_data;
-        feedback_state->pending(type).store(false, std::memory_order_release);
+        feedback_state->output_pending.store(false, std::memory_order_release);
         return false;
     }
 
@@ -240,8 +243,6 @@ void Wayland::on_presentation_feedback_presented(void* data, struct wp_presentat
         uint64_t sample_seq = seq;
         if (feedback_data->type == SampleType::Output)
             sample_seq = refresh > 0 ? presented_ns / refresh : seq;
-        else if (feedback_data->type == SampleType::Hud && feedback_data->feedback_state)
-            sample_seq = feedback_data->feedback_state->next_hud_seq();
 
         if (auto ipc = feedback_data->ipc.lock())
             ipc->add_to_queue(feedback_data->type, sample_seq, presented_ns);
@@ -253,8 +254,8 @@ void Wayland::on_presentation_feedback_presented(void* data, struct wp_presentat
     SPDLOG_TRACE("wl presentation feedback: {} presented={}.{:09} refresh={} seq={} flags=0x{:x}",
                  surface, tv_sec, tv_nsec, refresh, seq, flags);
 
-    if (feedback_data)
-        feedback_data->clear_pending();
+    if (feedback_data && feedback_data->feedback_state)
+        feedback_data->feedback_state->output_pending.store(false, std::memory_order_release);
     wp_presentation_feedback_destroy(feedback);
     delete feedback_data;
 }
@@ -266,8 +267,8 @@ void Wayland::on_presentation_feedback_discarded(void* data, struct wp_presentat
     SPDLOG_TRACE("wl presentation feedback: {} discarded", surface);
     if (feedback_data && feedback_data->type == SampleType::Output && feedback_data->wayland)
         feedback_data->wayland->set_presentation_focus(false, os_time_get_nano());
-    if (feedback_data)
-        feedback_data->clear_pending();
+    if (feedback_data && feedback_data->feedback_state)
+        feedback_data->feedback_state->output_pending.store(false, std::memory_order_release);
     wp_presentation_feedback_destroy(feedback);
     delete feedback_data;
 }
@@ -512,9 +513,6 @@ std::shared_ptr<shm_buffer> Wayland::present(const std::shared_ptr<surface_data>
     }
     wl_surface_damage(surf_data->overlay_surf, 0, 0, slot->width, slot->height);
     wl_surface_damage_buffer(surf_data->overlay_surf, 0, 0, slot->width, slot->height);
-    auto* globals = ctx.get_global(surf_data->display);
-    if (globals)
-        request_presentation_feedback(surf_data, *globals, surf_data->overlay_surf, SampleType::Hud, hud_surface_name);
     wl_surface_commit(surf_data->overlay_surf);
     wl_display_flush(surf_data->display);
     surf_data->attached = true;
