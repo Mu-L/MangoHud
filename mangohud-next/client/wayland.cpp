@@ -1,6 +1,7 @@
 #include "wayland.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <linux/dma-buf.h>
 #include <spdlog/spdlog.h>
@@ -17,35 +18,92 @@ Wayland::~Wayland()
     destroy_wayland_objects();
 }
 
-bool Wayland::request_presentation_feedback(const std::shared_ptr<surface_data>& surf_data, wl_globals& globals,
-                                            wl_surface* surface, SampleType type, const char* surface_name)
+void Wayland::release_app_feedback_request()
+{
+    auto pending = app_feedback_pending.load(std::memory_order_acquire);
+    while (pending > 0) {
+        if (app_feedback_pending.compare_exchange_weak(pending, pending - 1, std::memory_order_acq_rel))
+            return;
+    }
+}
+
+bool Wayland::request_app_presentation_feedback(const std::shared_ptr<surface_data>& surf_data, wl_globals& globals,
+                                                wl_surface* surface)
 {
     if (!surf_data || !surface || !globals.presentation)
         return false;
 
-    if (type != SampleType::Output)
+    auto pending = app_feedback_pending.fetch_add(1, std::memory_order_acq_rel);
+    if (pending >= max_app_feedback_pending) {
+        release_app_feedback_request();
         return false;
-
-    auto feedback_state = surf_data->presentation_feedback;
-    if (feedback_state->output_pending.exchange(true, std::memory_order_acq_rel))
-        return false;
+    }
 
     auto* feedback = wp_presentation_feedback(globals.presentation, surface);
     if (!feedback) {
-        feedback_state->output_pending.store(false, std::memory_order_release);
+        SPDLOG_DEBUG("wl presentation feedback: failed to create app feedback");
+        release_app_feedback_request();
         return false;
     }
 
     wl_proxy_set_queue(reinterpret_cast<wl_proxy*>(feedback), globals.queue);
-    auto* feedback_data = new presentation_feedback_data{ipc, feedback_state, type, surface_name, this};
+    auto* feedback_data = new presentation_feedback_data{ipc, this};
     if (wp_presentation_feedback_add_listener(feedback, &presentation_feedback_listener, feedback_data) != 0) {
         wp_presentation_feedback_destroy(feedback);
         delete feedback_data;
-        feedback_state->output_pending.store(false, std::memory_order_release);
+        SPDLOG_ERROR("wl presentation feedback: failed to add app feedback listener");
+        release_app_feedback_request();
         return false;
     }
 
     return true;
+}
+
+std::shared_ptr<surface_data> Wayland::get_surface(wl_proxy* proxy)
+{
+    if (!proxy)
+        return nullptr;
+
+    auto* display = wl_proxy_get_display(proxy);
+    uint32_t id = wl_proxy_get_id(proxy);
+    std::lock_guard lock(surf_m);
+
+    auto matches = [display, id](const std::shared_ptr<surface_data>& surf_data) {
+        if (!surf_data || surf_data->display != display || !surf_data->surface)
+            return false;
+
+        return wl_proxy_get_id(reinterpret_cast<wl_proxy*>(surf_data->surface)) == id;
+    };
+
+    for (auto& [_, surf_data] : egl_surfaces)
+        if (matches(surf_data))
+            return surf_data;
+
+    for (auto& [_, surf_data] : surfaces)
+        if (matches(surf_data))
+            return surf_data;
+
+    return nullptr;
+}
+
+bool Wayland::request_commit_presentation_feedback(wl_proxy* surface_proxy)
+{
+    auto surf_data = get_surface(surface_proxy);
+    if (!surf_data)
+        return false;
+
+    auto* globals = ctx.get_global(surf_data->display);
+    if (!globals)
+        return false;
+
+    bool requested = request_app_presentation_feedback(surf_data, *globals,
+                                                      reinterpret_cast<wl_surface*>(surface_proxy));
+    if (requested) {
+        SPDLOG_TRACE("wl presentation feedback: app requested on commit id={}",
+                     wl_proxy_get_id(surface_proxy));
+    }
+
+    return requested;
 }
 
 bool Wayland::ensure_overlay_data(const std::shared_ptr<surface_data>& surf_data)
@@ -59,7 +117,8 @@ bool Wayland::ensure_overlay_data(const std::shared_ptr<surface_data>& surf_data
     if (!globals)
         return false;
 
-    if (request_presentation_feedback(surf_data, *globals, surf_data->surface, SampleType::Output, app_surface_name))
+    if (!surf_data->app_feedback_via_commit &&
+        request_app_presentation_feedback(surf_data, *globals, surf_data->surface))
         wl_display_flush(surf_data->display);
 
     if (!globals->compositor || !globals->subcompositor || !globals->dmabuf)
@@ -235,27 +294,42 @@ void Wayland::on_presentation_feedback_presented(void* data, struct wp_presentat
                                                 uint32_t flags)
 {
     auto* feedback_data = static_cast<presentation_feedback_data*>(data);
-    auto* surface = feedback_data && feedback_data->surface ? feedback_data->surface : "unknown";
     uint64_t tv_sec = (uint64_t(tv_sec_hi) << 32) | tv_sec_lo;
     uint64_t seq = (uint64_t(seq_hi) << 32) | seq_lo;
     uint64_t presented_ns = tv_sec * 1000000000ULL + tv_nsec;
+    bool app_sample = false;
     if (feedback_data) {
-        uint64_t sample_seq = seq;
-        if (feedback_data->type == SampleType::Output)
-            sample_seq = refresh > 0 ? presented_ns / refresh : seq;
+        app_sample = true;
+        uint64_t app_sample_seq = seq;
+        if (feedback_data->wayland) {
+            std::lock_guard lock(feedback_data->wayland->app_feedback_m);
+            app_sample = feedback_data->wayland->last_app_presented_ns != presented_ns ||
+                         feedback_data->wayland->last_app_output_seq != seq;
+            if (app_sample) {
+                feedback_data->wayland->last_app_presented_ns = presented_ns;
+                feedback_data->wayland->last_app_output_seq = seq;
+                app_sample_seq = feedback_data->wayland->app_seq++;
+            }
+        }
 
-        if (auto ipc = feedback_data->ipc.lock())
-            ipc->add_to_queue(feedback_data->type, sample_seq, presented_ns);
-
-        if (feedback_data->type == SampleType::Output && feedback_data->wayland)
+        if (auto ipc = feedback_data->ipc.lock()) {
+            auto sample_seq = refresh > 0 ? presented_ns / refresh : seq;
+            ipc->add_to_queue(SampleType::Refresh, sample_seq, presented_ns);
+            if (app_sample)
+                ipc->add_to_queue(SampleType::App, app_sample_seq, presented_ns);
+        }
+        if (feedback_data->wayland) {
+            if (refresh > 0)
+                feedback_data->wayland->refresh_ns.store(refresh, std::memory_order_release);
             feedback_data->wayland->set_presentation_focus(true, os_time_get_nano());
+        }
     }
 
-    SPDLOG_TRACE("wl presentation feedback: {} presented={}.{:09} refresh={} seq={} flags=0x{:x}",
-                 surface, tv_sec, tv_nsec, refresh, seq, flags);
+    SPDLOG_TRACE("wl presentation feedback: app presented={}.{:09} refresh={} seq={} flags=0x{:x} app_sample={}",
+                 tv_sec, tv_nsec, refresh, seq, flags, app_sample);
 
-    if (feedback_data && feedback_data->feedback_state)
-        feedback_data->feedback_state->output_pending.store(false, std::memory_order_release);
+    if (feedback_data && feedback_data->wayland)
+        feedback_data->wayland->release_app_feedback_request();
     wp_presentation_feedback_destroy(feedback);
     delete feedback_data;
 }
@@ -263,12 +337,11 @@ void Wayland::on_presentation_feedback_presented(void* data, struct wp_presentat
 void Wayland::on_presentation_feedback_discarded(void* data, struct wp_presentation_feedback* feedback)
 {
     auto* feedback_data = static_cast<presentation_feedback_data*>(data);
-    auto* surface = feedback_data && feedback_data->surface ? feedback_data->surface : "unknown";
-    SPDLOG_TRACE("wl presentation feedback: {} discarded", surface);
-    if (feedback_data && feedback_data->type == SampleType::Output && feedback_data->wayland)
+    SPDLOG_TRACE("wl presentation feedback: app discarded");
+    if (feedback_data && feedback_data->wayland)
         feedback_data->wayland->set_presentation_focus(false, os_time_get_nano());
-    if (feedback_data && feedback_data->feedback_state)
-        feedback_data->feedback_state->output_pending.store(false, std::memory_order_release);
+    if (feedback_data && feedback_data->wayland)
+        feedback_data->wayland->release_app_feedback_request();
     wp_presentation_feedback_destroy(feedback);
     delete feedback_data;
 }
@@ -561,7 +634,11 @@ void Wayland::run_thread(std::shared_ptr<surface_data> surf_data)
         if (quit.load())
             break;
 
-        int sleep = ipc->connected.load(std::memory_order_acquire) ? 4 : 100;
-        std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
+        std::chrono::nanoseconds sleep = std::chrono::milliseconds(100);
+        if (ipc->connected.load(std::memory_order_acquire)) {
+            auto refresh = refresh_ns.load(std::memory_order_acquire);
+            sleep = refresh > 0 ? std::chrono::nanoseconds(refresh / 2) : std::chrono::milliseconds(7);
+        }
+        std::this_thread::sleep_for(sleep);
     }
 }

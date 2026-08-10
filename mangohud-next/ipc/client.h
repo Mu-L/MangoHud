@@ -20,8 +20,9 @@ constexpr uint64_t KEEP_NS = 500000000ULL;
 
 enum class SampleType : uint8_t {
     Frame,
-    Output,
+    Refresh,
     Hud,
+    App,
     Count,
 };
 
@@ -34,7 +35,7 @@ struct Sample {
 struct SampleStats {
     mutable std::mutex m;
     std::deque<Sample> samples;
-    std::vector<float> frametimes;
+    std::vector<float> frametimes = std::vector<float>(FT_MAX, 0.0f);
     uint64_t n_samples = 0;
     uint64_t last_fps_update = 0;
     uint64_t seq_last = 0, t_last = 0;
@@ -90,6 +91,11 @@ struct SampleStats {
         previous_fps = (float)(1e9 * (double)dseq / (double)dt);
         last_fps_update = b.t_ns;
         return previous_fps;
+    }
+
+    float avg_frametime() {
+        float fps = avg_fps();
+        return fps > 0 ? 1000.f / fps : 0.f;
     }
 
     std::vector<float> frametimes_copy() const {

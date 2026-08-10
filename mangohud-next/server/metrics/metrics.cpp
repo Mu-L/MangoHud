@@ -140,44 +140,43 @@ void Metrics::update() {
 void Metrics::update_client() {
     while (!stop.load()) {
         MetricTable new_metrics;
+        std::vector<std::shared_ptr<Client>> clients;
         {
             std::lock_guard clients_lock(ipc.clients_mtx);
-            for (auto client : ipc.clients) {
-                std::vector<float> frametimes;
-                std::vector<float> output_frametimes;
-                std::vector<float> hud_frametimes;
-                float avg_fps;
-                float output_fps;
-                float hud_fps;
-                {
-                    std::lock_guard lock(client->m);
-                    frametimes = client->stats_for(SampleType::Frame).frametimes_copy();
-                    output_frametimes = client->stats_for(SampleType::Output).frametimes_copy();
-                    hud_frametimes = client->stats_for(SampleType::Hud).frametimes_copy();
-                    avg_fps = client->stats_for(SampleType::Frame).avg_fps();
-                    output_fps = client->stats_for(SampleType::Output).avg_fps();
-                    hud_fps = client->stats_for(SampleType::Hud).avg_fps();
-                    auto& metrics = new_metrics[std::to_string(client->pid)];
-                    metrics["ENGINE_NAME"] = {engine_name(client->pEngineName)};
-                    metrics["GPU_NAME"] = {client->gpuName};
-                    metrics["VULKAN_DRIVER"] = {client->vulkanDriver};
-                    metrics["FOCUSED"] = {client->focused() ? "true" : "false"};
-                    metrics["FOCUSED_SEATS"] = {join_strings(client->focused_seats, ",")};
-                    if (client->resolutionWidth && client->resolutionHeight)
-                        metrics["RESOLUTION"] = {std::to_string(client->resolutionWidth) + "x" + std::to_string(client->resolutionHeight)};
-                }
-                // TODO fps and frametime updates should match other metrics at 500ms
-                // frametimes should still be this fast
-                new_metrics[std::to_string(client->pid)]["FPS"] = {int(round(avg_fps)), "FPS"};
-                new_metrics[std::to_string(client->pid)]["OUTPUT_FPS"] = {int(round(output_fps)), "FPS"};
-                new_metrics[std::to_string(client->pid)]["HUD_FPS"] = {int(round(hud_fps)), "FPS"};
-                new_metrics[std::to_string(client->pid)]["FRAMETIME"] = {1000.f / avg_fps, "ms"};
-                new_metrics[std::to_string(client->pid)]["OUTPUT_FRAMETIME"] = {output_fps > 0 ? 1000.f / output_fps : 0.f, "ms"};
-                new_metrics[std::to_string(client->pid)]["HUD_FRAMETIME"] = {hud_fps > 0 ? 1000.f / hud_fps : 0.f, "ms"};
-                new_metrics[std::to_string(client->pid)]["FRAMETIMES"] = {frametimes};
-                new_metrics[std::to_string(client->pid)]["OUTPUT_FRAMETIMES"] = {output_frametimes};
-                new_metrics[std::to_string(client->pid)]["HUD_FRAMETIMES"] = {hud_frametimes};
-            }
+            clients = ipc.clients;
+        }
+
+        for (const auto& client : clients) {
+            auto& metrics = new_metrics[std::to_string(client->pid)];
+            std::lock_guard lock(client->m);
+
+            auto& frame_stats = client->stats_for(SampleType::Frame);
+            auto& refresh_stats = client->stats_for(SampleType::Refresh);
+            auto& app_stats = client->stats_for(SampleType::App);
+            auto& hud_stats = client->stats_for(SampleType::Hud);
+
+            metrics["ENGINE_NAME"] = {engine_name(client->pEngineName)};
+            metrics["GPU_NAME"] = {client->gpuName};
+            metrics["VULKAN_DRIVER"] = {client->vulkanDriver};
+            metrics["FOCUSED"] = {client->focused() ? "true" : "false"};
+            metrics["FOCUSED_SEATS"] = {join_strings(client->focused_seats, ",")};
+            if (client->resolutionWidth && client->resolutionHeight)
+                metrics["RESOLUTION"] = {std::to_string(client->resolutionWidth) + "x" + std::to_string(client->resolutionHeight)};
+
+            // TODO fps and frametime updates should match other metrics at 500ms
+            // frametimes should still be this fast
+            metrics["FPS"] = {int(round(frame_stats.avg_fps())), "FPS"};
+            metrics["REFRESH_FPS"] = {int(round(refresh_stats.avg_fps())), "FPS"};
+            metrics["APP_FPS"] = {int(round(app_stats.avg_fps())), "FPS"};
+            metrics["HUD_FPS"] = {int(round(hud_stats.avg_fps())), "FPS"};
+            metrics["FRAMETIME"] = {frame_stats.avg_frametime(), "ms"};
+            metrics["REFRESH_FRAMETIME"] = {refresh_stats.avg_frametime(), "ms"};
+            metrics["APP_FRAMETIME"] = {app_stats.avg_frametime(), "ms"};
+            metrics["HUD_FRAMETIME"] = {hud_stats.avg_frametime(), "ms"};
+            metrics["FRAMETIMES"] = {frame_stats.frametimes_copy()};
+            metrics["REFRESH_FRAMETIMES"] = {refresh_stats.frametimes_copy()};
+            metrics["APP_FRAMETIMES"] = {app_stats.frametimes_copy()};
+            metrics["HUD_FRAMETIMES"] = {hud_stats.frametimes_copy()};
         }
 
         {

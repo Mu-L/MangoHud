@@ -42,10 +42,6 @@ struct shm_buffer {
     }
 };
 
-struct presentation_feedback_state {
-    std::atomic<bool> output_pending{false};
-};
-
 struct focus_signal_state {
     bool active = false;
     uint64_t time_ns = 0;
@@ -178,13 +174,12 @@ struct surface_data {
     wl_display* display = nullptr;
     wl_surface* surface = nullptr;
     wl_event_queue* queue = nullptr;
+    bool app_feedback_via_commit = false;
     wl_surface* overlay_surf = nullptr;
     wl_subsurface* sub_surf = nullptr;
     wp_viewport* viewport = nullptr;
     wp_fractional_scale_v1* fractional_scale = nullptr;
     std::atomic<uint32_t> preferred_scale{120};
-    std::shared_ptr<presentation_feedback_state> presentation_feedback =
-        std::make_shared<presentation_feedback_state>();
     bool attached = false;
 
     std::vector<std::shared_ptr<shm_buffer>> buffers;
@@ -194,9 +189,6 @@ struct surface_data {
 
 struct presentation_feedback_data {
     std::weak_ptr<IPCClient> ipc;
-    std::shared_ptr<presentation_feedback_state> feedback_state;
-    SampleType type = SampleType::Frame;
-    const char* surface = nullptr;
     Wayland* wayland = nullptr;
 };
 
@@ -211,6 +203,7 @@ public:
     ~Wayland();
 
     void destroy_wayland_objects();
+    bool request_commit_presentation_feedback(wl_proxy* surface_proxy);
 
     template <typename Surface>
     void add_surface(Surface key, wl_surface* wl_surface, wl_display* display) {
@@ -218,6 +211,7 @@ public:
         auto surf_data = std::make_shared<surface_data>();
         surf_data->display = display;
         surf_data->surface = wl_surface;
+        surf_data->app_feedback_via_commit = std::is_same_v<Surface, EGLSurface>;
         if constexpr (std::is_same_v<Surface, VkSurfaceKHR>) {
             surfaces[key] = std::move(surf_data);
         } else {
@@ -285,6 +279,9 @@ private:
         }
     }
 
+    std::shared_ptr<surface_data> get_surface(wl_proxy* proxy);
+    void release_app_feedback_request();
+
     WaylandCtx ctx;
     std::unordered_map<VkSurfaceKHR, std::shared_ptr<surface_data>> surfaces;
     std::unordered_map<EGLSurface, std::shared_ptr<surface_data>> egl_surfaces;
@@ -297,6 +294,13 @@ private:
 
     std::thread thread;
     std::atomic<bool> quit{false};
+    std::atomic<uint32_t> refresh_ns{0};
+    inline static constexpr uint32_t max_app_feedback_pending = 8;
+    std::atomic<uint32_t> app_feedback_pending{0};
+    std::mutex app_feedback_m;
+    uint64_t app_seq = 0;
+    uint64_t last_app_presented_ns = 0;
+    uint64_t last_app_output_seq = 0;
     std::shared_ptr<surface_data> active_surface;
 
     static void on_global(void* data, wl_globals& global, wl_registry* registry,
@@ -349,10 +353,8 @@ private:
         .discarded = Wayland::on_presentation_feedback_discarded,
     };
 
-    inline static char app_surface_name[] = "app";
-
-    bool request_presentation_feedback(const std::shared_ptr<surface_data>& surf_data, wl_globals& globals,
-                                       wl_surface* surface, SampleType type, const char* surface_name);
+    bool request_app_presentation_feedback(const std::shared_ptr<surface_data>& surf_data, wl_globals& globals,
+                                           wl_surface* surface);
     bool ensure_overlay_data(const std::shared_ptr<surface_data>& surf_data);
     void remove_seat(uint32_t name, wl_display* display);
     void update_import(const std::shared_ptr<surface_data>& surf_data);
