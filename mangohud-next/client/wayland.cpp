@@ -64,15 +64,16 @@ std::shared_ptr<surface_data> Wayland::get_surface(wl_proxy* proxy)
     if (!proxy)
         return nullptr;
 
-    auto* display = wl_proxy_get_display(proxy);
     uint32_t id = wl_proxy_get_id(proxy);
+    auto* surface = reinterpret_cast<wl_surface*>(proxy);
     std::lock_guard lock(surf_m);
 
-    auto matches = [display, id](const std::shared_ptr<surface_data>& surf_data) {
-        if (!surf_data || surf_data->display != display || !surf_data->surface)
+    auto matches = [surface, id](const std::shared_ptr<surface_data>& surf_data) {
+        if (!surf_data || !surf_data->surface)
             return false;
 
-        return wl_proxy_get_id(reinterpret_cast<wl_proxy*>(surf_data->surface)) == id;
+        return surf_data->surface == surface ||
+               wl_proxy_get_id(reinterpret_cast<wl_proxy*>(surf_data->surface)) == id;
     };
 
     for (auto& [_, surf_data] : egl_surfaces)
