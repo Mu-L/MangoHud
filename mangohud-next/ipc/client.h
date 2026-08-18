@@ -233,11 +233,6 @@ private:
     std::weak_ptr<Client> self_weak;
     std::unique_ptr<Renderer> renderer;
 
-    static inline const sd_bus_vtable vtable[] = {
-        SD_BUS_VTABLE_START(0),
-        SD_BUS_VTABLE_END
-    };
-
     bool ready_frame_blocking();
     void queue_frame();
     void dbus_thread();
