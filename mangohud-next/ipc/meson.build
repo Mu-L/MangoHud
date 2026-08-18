@@ -46,4 +46,5 @@ ipc_lib = static_library(
 ipc_dep = declare_dependency(
   link_with: ipc_lib,
   include_directories: [ipc_inc],
+  dependencies: [sdbus_dep],
 )

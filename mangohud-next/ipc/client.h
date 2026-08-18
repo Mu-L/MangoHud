@@ -10,10 +10,10 @@
 #include <memory>
 #include <future>
 #include <vector>
-#include <systemd/sd-bus.h>
 #include "../render/shared.h"
 #include <poll.h>
 #include <sys/eventfd.h>
+#include <systemd/sd-bus.h>
 
 constexpr size_t   FT_MAX = 200;
 constexpr uint64_t KEEP_NS = 500000000ULL;
