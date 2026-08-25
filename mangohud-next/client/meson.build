@@ -46,14 +46,8 @@ vulkan_layer = shared_library(
 
 conf_data = configuration_data()
 
-if get_option('dynamic_string_tokens')
-  next_ld_libdir_mangohud = get_option('prefix') + '/lib/mangohud/\$LIB/'
-else
-  next_ld_libdir_mangohud = libdir_mangohud + '/'
-endif
-
 conf_data.set('ld_libdir_mangohud_abs', libdir_mangohud)
-conf_data.set('ld_libdir_mangohud', next_ld_libdir_mangohud)
+conf_data.set('ld_libdir_mangohud', ld_libdir_mangohud)
 conf_data.set('mangohud_lib_name', 'libMangoHud-next.so')
 conf_data.set('mangohud_env', 'MANGOHUD_NEXT')
 conf_data.set('cpu_family', host_machine.cpu_family())
