@@ -17,9 +17,6 @@ void FDInfoBase::init()
 {
     std::vector<std::string> fds = find_fds();
 
-    fds_streams.clear();
-    fds_data.clear();
-
     open_fds(fds);
 
     last_init = std::chrono::steady_clock::now();
@@ -88,7 +85,6 @@ std::vector<std::string> FDInfoBase::find_fds() {
 void FDInfoBase::open_fds(const std::vector<std::string>& fds) {
     // set of unique ids, dont open fds which contain
     // existing ids, because they will contain same data 
-    std::set<std::string> client_ids;
     size_t total = 0;
 
     for (const std::string& fd: fds) {

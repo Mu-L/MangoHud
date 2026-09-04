@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <set>
 #include <chrono>
 
 typedef std::map<std::string, std::string> fdinfo_data;
@@ -12,6 +13,7 @@ typedef std::chrono::time_point<std::chrono::steady_clock> chrono_timer;
 class FDInfoBase {
 private:
     std::vector<std::ifstream> fds_streams;
+    std::set<std::string> client_ids;
     chrono_timer last_init;
     std::string card_node;
 
