@@ -2,6 +2,7 @@
 #include <cstdlib>
 
 #include "gpu.hpp"
+#include "../fdinfo.hpp"
 
 void GPU::check_pids_existence() {
     std::set<pid_t> pids_to_delete;
@@ -137,8 +138,13 @@ GPU::~GPU() {
 }
 
 void GPU::add_pid(pid_t pid) {
-    std::unique_lock lock(process_metrics_mutex);
-    process_metrics.try_emplace(pid);
+    {
+        std::unique_lock lock(process_metrics_mutex);
+        process_metrics.try_emplace(pid);
+    }
+
+    if (auto* fdinfo_gpu = dynamic_cast<FDInfo*>(this))
+        fdinfo_gpu->fdinfo.add_pid(pid);
 }
 
 gpu_metrics_system_t GPU::get_system_metrics() {

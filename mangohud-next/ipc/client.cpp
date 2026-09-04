@@ -264,6 +264,8 @@ int Client::on_connect(sd_bus_message* m, void* userdata, sd_bus_error* ret_erro
     self->vulkanDriver = vulkan_driver;
     self->gpuName = gpu_name;
     self->resources->api = static_cast<Backend>(raw_api);
+    if (self->server && self->server->metrics)
+        self->server->metrics->add_client_pid(self->pid);
 
     self->send_config();
 

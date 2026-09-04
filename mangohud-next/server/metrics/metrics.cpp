@@ -91,6 +91,11 @@ Metrics::Metrics(IPCServer& ipc, std::shared_ptr<Config> cfg_) : cfg(cfg_), ipc(
     pthread_setname_np(thread.native_handle(), "update_metrics");
 }
 
+void Metrics::add_client_pid(pid_t pid) {
+    for (const auto& gpu : gpus.available())
+        gpu->add_pid(pid);
+}
+
 void Metrics::update() {
     while (!stop.load()) {
         MetricTable new_metrics;
